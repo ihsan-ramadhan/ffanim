@@ -18,13 +18,16 @@ Linux, fastfetch, a C compiler. No libraries beyond libc and libm.
 
 `ffanim` goes to `~/.local/bin` and an example logo to
 `~/.local/share/ffanim/`, both under `PREFIX=`. Nothing is written to your
-config. Try it:
+config. See it move, then press Ctrl-C:
 
-    ffanim --once
+    ffanim
 
-## Pin it to your shell
+## Put it in your shell
 
-`~/.config/fish/config.fish`:
+Two ways to run it, and they are a real choice rather than two spellings of the
+same thing.
+
+**Pinned above your prompt.** `~/.config/fish/config.fish`:
 
     function fish_greeting
         type -q ffanim; or return
@@ -36,9 +39,46 @@ bash or zsh:
     [[ $- == *i* ]] && command -v ffanim >/dev/null && \
         fastfetch --logo none --pipe false | ffanim --pin --stdin
 
-Pipe fastfetch in rather than letting ffanim run it. fastfetch names your shell
-by walking the parent process chain, and from inside ffanim that chain leads to
-ffanim.
+The block is painted onto the top rows of the live screen every frame, so it
+never enters the terminal's buffer. It holds its place no matter how much you
+print, and scrolling up will not find it in your history, because it was never
+written there.
+
+**Scrolling away like ordinary output.** `~/.config/fish/config.fish`:
+
+    if status is-interactive; and not set -q FFANIM_WRAPPED; and type -q ffanim
+        fastfetch --logo none --pipe false | ffanim --wrap --stdin
+        set -l rc $status
+        exec sh -c "exit $rc"
+    end
+
+bash or zsh:
+
+    if [[ $- == *i* && -z $FFANIM_WRAPPED ]]; then
+        fastfetch --logo none --pipe false | ffanim --wrap --stdin
+        exec sh -c "exit $?"
+    fi
+
+ffanim prints the block, starts your shell on a pty of its own, and relays
+between that pty and the terminal. Every byte passes through it, so it knows the
+moment the screen scrolls, and that is when it stops for good and becomes a
+plain relay. The block it printed is then ordinary scrollback, exactly as
+printed, and it rides up and out like any other output. Full-screen programs are
+left alone too: while one owns the screen ffanim paints nothing, and picks up
+again when it exits.
+
+What that costs is not speed. Measured here the relay adds 1.8 us per keystroke,
+against the 5 to 20 ms of input latency you already have, and carries 123 MB/s
+where a bare pty carries 155 MB/s, far past what a terminal can draw. What it
+costs is that your shell's parent is now ffanim, so if ffanim dies the session
+goes with it.
+
+Either way, pipe fastfetch in rather than letting ffanim run it. fastfetch names
+your shell by walking the parent process chain, and from inside ffanim that
+chain leads to ffanim.
+
+`--once` is not a third way to run it. It prints one frame and exits, which is
+what a script wants, and the only mode that works with no terminal at all.
 
 ## Options
 
@@ -47,6 +87,7 @@ ffanim.
 | `--pin [--stdin]` | pin above the shell and keep animating |
 | `--unpin` | stop it and release the scroll region |
 | `--once` | print one static frame and exit |
+| `--wrap [--stdin]` | run your shell inside ffanim, see below |
 | `--fps <n>` | frames per second, default 20 |
 | `--step <n>` | rows the band moves per frame, default 0.35 |
 | `--refresh <n>` | re-read the info pane every n seconds, default off |

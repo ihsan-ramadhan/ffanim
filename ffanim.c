@@ -1,4 +1,4 @@
-#define _DEFAULT_SOURCE
+#define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <poll.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <termios.h>
@@ -18,6 +19,8 @@
 #endif
 
 #define GAP 3
+#define MINLOGO 14
+#define MININFO 20
 #define SPACER 1
 #define SPAN 4.0
 #define DIM 0.42
@@ -327,7 +330,8 @@ static void fit_block(int max_rows, int max_cols) {
     int info_w = need_w - width - GAP;
     int max_logo_cols = max_cols - GAP - info_w;
     int max_logo_rows = max_rows - 1;
-    if (max_logo_cols < 8 || max_logo_rows < 3) return;
+    if (max_logo_cols < MINLOGO) max_logo_cols = MINLOGO;
+    if (max_logo_rows < 3) return;
 
     double sx = (double)max_logo_cols / width;
     double sy = (double)max_logo_rows / nlines;
@@ -335,7 +339,7 @@ static void fit_block(int max_rows, int max_cols) {
     if (s >= 1.0) return;
 
     int cx = (int)(width * s), cy = (int)(nlines * s);
-    if (cx < 8 || cy < 3) return;
+    if (cx < MINLOGO || cy < 3) return;
     scale_logo(cx, cy);
     recompute();
 }
@@ -683,12 +687,323 @@ static void animate_inline(double fps, double step) {
     fflush(stdout);
 }
 
+static volatile sig_atomic_t got_winch;
+
+static void on_winch(int sig) { (void)sig; got_winch = 1; }
+
+#define TR_PEND 64
+#define TR_SLICE (1 << 16)
+
+typedef struct {
+    int row, col, w, h;
+    int srow, scol;
+    int arow, acol, alt;
+    int top;
+    int live;
+    char pend[TR_PEND];
+    int npend;
+} track;
+
+static void tr_nl(track *t) {
+    if (++t->row >= t->h) {
+        t->top -= t->row - (t->h - 1);
+        t->row = t->h - 1;
+    }
+}
+
+static int tr_csi(track *t, const char *p, int n, char fin) {
+    int a[4] = {0, 0, 0, 0}, na = 0, cur = -1, priv = 0, inter = 0;
+    for (int i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)p[i];
+        if (c == '?' || c == '<' || c == '=' || c == '>') { priv = 1; continue; }
+        if (c >= 0x20 && c <= 0x2f) { inter = 1; continue; }
+        if (c == ';' || c == ':') { if (na < 4) a[na++] = cur < 0 ? 0 : cur; cur = -1; continue; }
+        if (c >= '0' && c <= '9') cur = (cur < 0 ? 0 : cur) * 10 + (c - '0');
+        else return 0;
+    }
+    if (inter) return 1;
+    if (na < 4) a[na++] = cur < 0 ? 0 : cur;
+    int v = a[0] > 0 ? a[0] : 1;
+
+    if (priv) {
+        if (a[0] == 1049 || a[0] == 47 || a[0] == 1047) {
+            if (fin == 'h' && !t->alt) {
+                t->alt = 1;
+                t->arow = t->row;
+                t->acol = t->col;
+            } else if (fin == 'l' && t->alt) {
+                t->alt = 0;
+                t->row = t->arow;
+                t->col = t->acol;
+            }
+        }
+        return 1;
+    }
+    if (t->alt) return 1;
+
+    switch (fin) {
+    case 'A': t->row -= v; break;
+    case 'B': case 'e': t->row += v; break;
+    case 'C': case 'a': t->col += v; break;
+    case 'D': t->col -= v; break;
+    case 'E': t->row += v; t->col = 0; break;
+    case 'F': t->row -= v; t->col = 0; break;
+    case 'G': case '`': t->col = v - 1; break;
+    case 'd': t->row = v - 1; break;
+    case 'H': case 'f':
+        t->row = (a[0] > 0 ? a[0] : 1) - 1;
+        t->col = (na > 1 && a[1] > 0 ? a[1] : 1) - 1;
+        break;
+    default: if (!strchr("JKmXP@hlncqtup", fin)) return 0;
+    }
+    if (t->row < 0) t->row = 0;
+    if (t->row >= t->h) { t->top -= t->row - (t->h - 1); t->row = t->h - 1; }
+    if (t->col < 0) t->col = 0;
+    return 1;
+}
+
+static void tr_slice(track *t, const char *buf, size_t len) {
+    static char tmp[TR_PEND + TR_SLICE];
+    const char *p = buf;
+    size_t n = len;
+    if (t->npend) {
+        size_t take = n < sizeof tmp - (size_t)t->npend ? n : sizeof tmp - (size_t)t->npend;
+        memcpy(tmp, t->pend, (size_t)t->npend);
+        memcpy(tmp + t->npend, buf, take);
+        p = tmp;
+        n = (size_t)t->npend + take;
+        t->npend = 0;
+    }
+    size_t i = 0;
+    while (i < n && t->live) {
+        unsigned char c = (unsigned char)p[i];
+        if (c == 0x1b) {
+            size_t j = i + 1;
+            if (j >= n) break;
+            if (p[j] == '7') { if (!t->alt) { t->srow = t->row; t->scol = t->col; } i = j + 1; continue; }
+            if (p[j] == '8') { if (!t->alt) { t->row = t->srow; t->col = t->scol; } i = j + 1; continue; }
+            if (p[j] == '=' || p[j] == '>') { i = j + 1; continue; }
+            if (p[j] == '(' || p[j] == ')' || p[j] == '*' || p[j] == '+' ||
+                p[j] == '-' || p[j] == '.' || p[j] == '/') {
+                if (j + 1 >= n) break;
+                i = j + 2;
+                continue;
+            }
+            if (p[j] == 'M') {
+                if (!t->alt && --t->row < 0) { t->row = 0; t->top++; }
+                i = j + 1;
+                continue;
+            }
+            if (p[j] == 'D') { if (!t->alt) tr_nl(t); i = j + 1; continue; }
+            if (p[j] == 'E') { if (!t->alt) { tr_nl(t); t->col = 0; } i = j + 1; continue; }
+            if (p[j] == 'P' || p[j] == '_' || p[j] == '^' || p[j] == ']') {
+                size_t k = j + 1;
+                while (k < n && (unsigned char)p[k] != 0x07 &&
+                       !((unsigned char)p[k] == 0x1b && k + 1 < n && p[k + 1] == '\\')) k++;
+                if (k >= n) break;
+                i = (unsigned char)p[k] == 0x07 ? k + 1 : k + 2;
+                continue;
+            }
+            if (p[j] != '[') { t->live = 0; break; }
+            size_t k = j + 1;
+            while (k < n && ((unsigned char)p[k] < 0x40 || (unsigned char)p[k] > 0x7e)) k++;
+            if (k >= n) break;
+            if (!tr_csi(t, p + j + 1, (int)(k - j - 1), p[k])) { t->live = 0; break; }
+            i = k + 1;
+            continue;
+        }
+        i++;
+        if (t->alt) continue;
+        if (c == '\n') { tr_nl(t); continue; }
+        if (c == '\r') { t->col = 0; continue; }
+        if (c == '\b') { if (t->col) t->col--; continue; }
+        if (c == '\t') { t->col = (t->col / 8 + 1) * 8; if (t->col >= t->w) t->col = t->w - 1; continue; }
+        if (c < 0x20) continue;
+        if ((c & 0xc0) == 0x80) continue;
+        if (++t->col >= t->w) { t->col = 0; tr_nl(t); }
+    }
+    if (t->live && i < n) {
+        size_t rest = n - i;
+        if (rest > sizeof t->pend) { t->live = 0; return; }
+        memcpy(t->pend, p + i, rest);
+        t->npend = (int)rest;
+    }
+}
+
+static void tr_feed(track *t, const char *buf, size_t len) {
+    while (len && t->live) {
+        size_t take = len > TR_SLICE ? TR_SLICE : len;
+        tr_slice(t, buf, take);
+        buf += take;
+        len -= take;
+    }
+}
+
+static double now_sec(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (double)t.tv_sec + t.tv_nsec / 1e9;
+}
+
+static int paint_at(int fd, int top, double pos, int max_cols, int max_rows) {
+    buf b = {0};
+    buf_str(&b, "\x1b\x37");
+    for (int r = 0; r < rows; r++) {
+        int screen = top + r;
+        if (screen < 0 || screen >= max_rows) continue;
+        buf line = {0};
+        row_text(&line, r, pos, 0);
+        buf_fmt(&b, "\x1b[%d;1H", screen + 1);
+        buf_add_clamped(&b, line.s ? line.s : "", max_cols);
+        free(line.s);
+        buf_str(&b, "\x1b[K");
+    }
+    buf_str(&b, "\x1b\x38");
+    ssize_t n = write(fd, b.s, b.len);
+    free(b.s);
+    return n == (ssize_t)b.len ? 0 : -1;
+}
+
+static int cursor_row(int tty) {
+    struct termios o, r;
+    if (tcgetattr(tty, &o) < 0) return -1;
+    r = o;
+    r.c_lflag &= (tcflag_t)~(ICANON | ECHO);
+    r.c_cc[VMIN] = 0;
+    r.c_cc[VTIME] = 2;
+    tcsetattr(tty, TCSANOW, &r);
+    ssize_t ignored = write(tty, "\x1b[6n", 4);
+    (void)ignored;
+    char b[64];
+    int n = 0, row = -1;
+    while (n < (int)sizeof b - 1) {
+        ssize_t k = read(tty, b + n, 1);
+        if (k <= 0) break;
+        if (b[n] == 'R') { b[n + 1] = '\0'; break; }
+        n++;
+    }
+    tcsetattr(tty, TCSANOW, &o);
+    char *e = strchr(b, '[');
+    if (e) row = atoi(e + 1);
+    return row > 0 ? row : -1;
+}
+
+static int wrap_shell(double fps, double step) {
+    int tty = open("/dev/tty", O_RDWR);
+    if (tty < 0) die("ffanim: --wrap needs a terminal");
+    struct winsize ws;
+    if (term_size(tty, &ws) < 0) die("ffanim: cannot measure the terminal");
+
+    fit_block(ws.ws_row - 1, ws.ws_col);
+
+    track t = {0};
+    t.w = ws.ws_col;
+    t.h = ws.ws_row;
+    t.live = 1;
+    int start = cursor_row(tty);
+    t.top = t.row = start > 0 ? start - 1 : 0;
+
+    print_static();
+    fflush(stdout);
+    for (int i = 0; i < rows; i++) tr_nl(&t);
+
+    int master = posix_openpt(O_RDWR | O_NOCTTY);
+    char slave_name[256];
+    if (master < 0 || grantpt(master) || unlockpt(master) ||
+        ptsname_r(master, slave_name, sizeof slave_name))
+        die("ffanim: cannot open a pty");
+    ioctl(master, TIOCSWINSZ, &ws);
+
+    pid_t child = fork();
+    if (child < 0) die("ffanim: fork: %s", strerror(errno));
+    if (child == 0) {
+        setsid();
+        int s = open(slave_name, O_RDWR);
+        if (s < 0) _exit(127);
+        ioctl(s, TIOCSCTTY, 0);
+        dup2(s, 0); dup2(s, 1); dup2(s, 2);
+        if (s > 2) close(s);
+        close(master);
+        close(tty);
+        setenv("FFANIM_WRAPPED", "1", 1);
+        const char *sh = getenv("SHELL");
+        if (!sh || !*sh) sh = "/bin/sh";
+        execl(sh, sh, (char *)NULL);
+        _exit(127);
+    }
+
+    struct termios orig, raw;
+    int have_termios = tcgetattr(tty, &orig) == 0;
+    if (have_termios) {
+        raw = orig;
+        cfmakeraw(&raw);
+        tcsetattr(tty, TCSANOW, &raw);
+    }
+    signal(SIGWINCH, on_winch);
+
+    char b[1 << 16];
+    double pos = -SPAN, next = now_sec() + 1.0 / fps;
+    int last_top = t.top, last_alt = 0;
+    for (;;) {
+        if (got_winch) {
+            got_winch = 0;
+            if (term_size(tty, &ws) == 0) ioctl(master, TIOCSWINSZ, &ws);
+            t.live = 0;
+        }
+        int wait_ms = -1;
+        if (t.live) {
+            double d = (next - now_sec()) * 1000.0;
+            wait_ms = d <= 0 ? 0 : (int)d;
+        }
+        struct pollfd p[2] = { { tty, POLLIN, 0 }, { master, POLLIN, 0 } };
+        int r = poll(p, 2, wait_ms);
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (p[0].revents & POLLIN) {
+            ssize_t n = read(tty, b, sizeof b);
+            if (n <= 0) break;
+            if (write(master, b, (size_t)n) != n) break;
+        }
+        if (p[1].revents & (POLLIN | POLLHUP | POLLERR)) {
+            ssize_t n = read(master, b, sizeof b);
+            if (n <= 0) break;
+            if (t.live) tr_feed(&t, b, (size_t)n);
+            if (write(tty, b, (size_t)n) != n) break;
+            if (t.live && t.top < 0) t.live = 0;
+        }
+        if (t.alt != last_alt) {
+            paint_reset();
+            last_alt = t.alt;
+        }
+        if (t.live && !t.alt && now_sec() >= next) {
+            if (t.top != last_top) {
+                paint_reset();
+                last_top = t.top;
+            }
+            if (paint_at(tty, t.top, pos, ws.ws_col, ws.ws_row) < 0) break;
+            pos = pos > (double)nlines + SPAN ? -SPAN : pos + step;
+            next = now_sec() + 1.0 / fps;
+        }
+    }
+
+    if (have_termios) tcsetattr(tty, TCSANOW, &orig);
+    int status = 0;
+    kill(child, SIGHUP);
+    waitpid(child, &status, 0);
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 0;
+}
+
 static void usage(void) {
     puts("ffanim - animated fastfetch, pinned above a working shell\n"
          "\n"
          "  ffanim --pin [--stdin]   pin above the shell and keep animating\n"
          "  ffanim --unpin           stop the pinned animation\n"
          "  ffanim --once            print one static frame and exit\n"
+         "  ffanim --wrap [--stdin]  run your shell inside ffanim: the block is\n"
+         "                           ordinary output that scrolls away, and keeps\n"
+         "                           animating until it does\n"
          "  ffanim                   animate in place, Ctrl-C to quit\n"
          "\n"
          "  --stdin                  read the info pane from stdin instead of\n"
@@ -745,7 +1060,7 @@ static void set_paths(void) {
 }
 
 int main(int argc, char **argv) {
-    int pin = 0, unpin = 0, once = 0, from_stdin = 0;
+    int pin = 0, unpin = 0, once = 0, from_stdin = 0, wrap = 0;
     double fps = 20.0, step = 0.35, refresh = 0.0;
 
     for (int i = 1; i < argc; i++) {
@@ -753,6 +1068,7 @@ int main(int argc, char **argv) {
         if (!strcmp(a, "--pin")) pin = 1;
         else if (!strcmp(a, "--unpin")) unpin = 1;
         else if (!strcmp(a, "--once")) once = 1;
+        else if (!strcmp(a, "--wrap")) wrap = 1;
         else if (!strcmp(a, "--stdin")) from_stdin = 1;
         else if (!strcmp(a, "--fps") && i + 1 < argc) fps = atof(argv[++i]);
         else if (!strcmp(a, "--step") && i + 1 < argc) step = atof(argv[++i]);
@@ -760,7 +1076,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) { usage(); return 0; }
         else die("ffanim: unknown option %s (try --help)", a);
     }
-    if (pin + unpin + once > 1) die("ffanim: --pin, --unpin and --once are exclusive");
+    if (pin + unpin + once + wrap > 1)
+        die("ffanim: --pin, --unpin, --once and --wrap are exclusive");
     if (fps < 1.0 || fps > 120.0) die("ffanim: --fps must be between 1 and 120");
     if (refresh != 0.0 && (refresh < 5.0 || refresh > 3600.0))
         die("ffanim: --refresh must be 0, or between 5 and 3600 seconds");
@@ -786,6 +1103,8 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    if (wrap) return wrap_shell(fps, step);
+
     int fd = open("/dev/tty", O_WRONLY);
     if (fd < 0) {
         print_static();
@@ -800,7 +1119,7 @@ int main(int argc, char **argv) {
     }
     fit_block(pin ? ws.ws_row - SPACER - 3 : ws.ws_row - 1, ws.ws_col);
     int min_rows = pin ? rows + SPACER + 3 : rows + 1;
-    int too_small = ws.ws_col < need_w || ws.ws_row < min_rows;
+    int too_small = ws.ws_col < width + GAP + MININFO || ws.ws_row < min_rows;
 
     if (pin) {
         if (too_small) {

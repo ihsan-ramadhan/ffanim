@@ -84,6 +84,42 @@ reads the terminal as permanently busy. The same wreckage is why your shell
 stops echoing, and `reset` fixes both.
 
 
+## Running your shell inside ffanim
+
+`--pin` paints the top rows of the live screen, which is why the block never
+enters the terminal's buffer and never scrolls. Making it scroll means knowing
+which row it is on after the screen has moved, and a detached process cannot
+know that. The terminal never says, and asking with a cursor position report
+means reading the tty, which steals the keystrokes the shell is waiting for.
+
+`--wrap` removes the question by owning the stream. ffanim opens a pty, starts
+your shell on it, and relays both directions. Every byte the shell writes passes
+through ffanim first, so it can count exactly how far the screen has scrolled.
+
+It counts by tracking the cursor: line feeds, carriage returns, tabs, wraps at
+the right margin, and the cursor movement sequences. When the cursor would pass
+the last row, the screen has scrolled, and that is where the animation ends.
+
+It could keep going, painting the block at wherever the scroll left it, and an
+earlier version did. That is a bad trade. Animating a half scrolled block buys
+very little, and an offset that is wrong by one row paints the block over itself
+and leaves that wreckage in your scrollback for good. Stopping at the first
+scroll means ffanim only ever paints at the top of the screen, where it cannot
+be wrong, and what ends up in your history is exactly what was printed.
+
+The tracking is deliberately cowardly. Anything it cannot account for, an
+unknown escape, a switch to the alternate screen, a resize, ends the animation
+rather than risking a frame painted over someone else's output. That also bounds
+the cost: the expensive path only runs while the block is still on screen, which
+is the first few seconds of a session. After that ffanim is a plain byte relay.
+
+Measured on this machine, that relay carries 123 MB/s where a bare pty carries
+155 MB/s, and scanning the stream for line feeds costs nothing next to the
+syscalls. A keystroke gains 1.8 us from the extra hop. Neither is the real cost.
+The real cost is that your shell's parent is now ffanim, so a crash takes the
+session with it, and that is a much larger blast radius than a painter you can
+kill without consequence.
+
 ## Resizing
 
 A scroll region stops the shell from scrolling the block away. It does not

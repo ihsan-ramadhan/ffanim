@@ -86,7 +86,7 @@ static void send(const char *fmt, ...) {
 }
 
 typedef struct {
-    int moves, frames, ed3, top, bot, marked;
+    int moves, frames, ed3, top, bot, marked, maxrow;
 } scan;
 
 static scan scan_output(void) {
@@ -112,6 +112,7 @@ static scan scan_output(void) {
 
         if (*q == 'H' && first > 0 && cur == 1) {
             s.moves++;
+            if (first > s.maxrow) s.maxrow = first;
             if (first < MAXROWS) {
                 const unsigned char *body = q + 1;
                 const unsigned char *stop = body;
@@ -200,6 +201,85 @@ static void start_shell(void) {
     }
 }
 
+static void wrap_checks(void) {
+    master = posix_openpt(O_RDWR | O_NOCTTY);
+    if (master < 0 || grantpt(master) || unlockpt(master)) die("test_pin: no pty");
+    if (ptsname_r(master, slave_name, sizeof slave_name)) die("test_pin: no pty name");
+    struct winsize ws = { 30, 100, 0, 0 };
+    ioctl(master, TIOCSWINSZ, &ws);
+
+    shell = fork();
+    if (shell < 0) die("test_pin: fork failed");
+    if (shell == 0) {
+        setsid();
+        int s = open(slave_name, O_RDWR);
+        if (s < 0) _exit(127);
+        ioctl(s, TIOCSCTTY, 0);
+        dup2(s, 0); dup2(s, 1); dup2(s, 2);
+        if (s > 2) close(s);
+        close(master);
+        char logo[512], cmd[1024];
+        snprintf(logo, sizeof logo, "%s/logo_braille", dir);
+        setenv("FFANIM_LOGO", logo, 1);
+        setenv("SHELL", "/bin/bash", 1);
+        snprintf(cmd, sizeof cmd,
+                 "fastfetch -c %s --logo none --pipe false | %s/ffanim --wrap --stdin",
+                 conf_path, dir);
+        execlp("sh", "sh", "-c", cmd, (char *)NULL);
+        _exit(127);
+    }
+
+    pump(2.0);
+    cap_reset();
+    pump(2.0);
+    scan a = scan_output();
+    check("wrap-animates", a.moves > 0, "--wrap should animate the block it printed");
+
+    send("echo MARK''ER");
+    pump(1.5);
+    check("wrap-shell", memmem(cap, cap_len, "MARKER", 6) != NULL,
+          "--wrap must run a working shell inside itself");
+
+    send("printf '\\033[?1049h'; sleep 3; printf '\\033[?1049l'");
+    pump(1.0);
+    cap_reset();
+    pump(1.5);
+    scan alt = scan_output();
+    check("wrap-alt-quiet", alt.moves == 0,
+          "--wrap must not paint over a full-screen app, wrote %d moves", alt.moves);
+    pump(2.0);
+    cap_reset();
+    pump(1.5);
+    scan back = scan_output();
+    check("wrap-alt-resumes", back.moves > 0,
+          "--wrap must animate again once the full-screen app leaves");
+
+    for (int i = 0; i < 4; i++) {
+        send("seq 1 4");
+        pump(1.2);
+    }
+    cap_reset();
+    pump(2.0);
+    scan f = scan_output();
+    check("wrap-freezes", f.moves == 0 || f.maxrow == a.maxrow,
+          "--wrap must only ever paint the block where it printed it, so what "
+          "lands in the scrollback is what was printed; painted up to row %d, "
+          "printed at %d", f.maxrow, a.maxrow);
+
+    send("exit");
+    int gone = 0;
+    for (int i = 0; i < 40 && !gone; i++) {
+        pump(0.1);
+        gone = waitpid(shell, NULL, WNOHANG) > 0;
+    }
+    check("wrap-exits", gone, "--wrap must exit when the shell inside it exits");
+
+    if (!gone) kill(shell, SIGKILL);
+    shell = 0;
+    close(master);
+    master = -1;
+}
+
 int main(void) {
     ssize_t n = readlink("/proc/self/exe", dir, sizeof dir - 1);
     if (n <= 0) die("test_pin: cannot locate myself");
@@ -216,6 +296,7 @@ int main(void) {
     fclose(cf);
 
     atexit(cleanup);
+    wrap_checks();
     start_shell();
 
     pump(1.0);
