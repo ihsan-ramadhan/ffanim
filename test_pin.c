@@ -173,6 +173,9 @@ static void cleanup(void) {
     if (conf_path[0]) unlink(conf_path);
     if (conf_dir[0]) {
         char p[700];
+        snprintf(p, sizeof p, "%s/home/.zshrc", conf_dir); unlink(p);
+        snprintf(p, sizeof p, "%s/home/.bashrc", conf_dir); unlink(p);
+        snprintf(p, sizeof p, "%s/home/.bashrc.ffanim.bak", conf_dir); unlink(p);
         snprintf(p, sizeof p, "%s/home/.config/ffanim/off", conf_dir); unlink(p);
         snprintf(p, sizeof p, "%s/home/.config/ffanim/anim", conf_dir); unlink(p);
         snprintf(p, sizeof p, "%s/home/.config/ffanim/color", conf_dir); unlink(p);
@@ -233,7 +236,7 @@ static void write_pref(const char *name, const char *value) {
 }
 
 static void cli_checks(void) {
-    char logo[512], cmd[1600], out[8192] = {0};
+    char logo[512], cmd[4096], out[8192] = {0};
     snprintf(logo, sizeof logo, "%s/logo_braille", dir);
     setenv("FFANIM_LOGO", logo, 1);
     make_home();
@@ -244,6 +247,7 @@ static void cli_checks(void) {
     FILE *f = popen(cmd, "r");
     size_t n = f ? fread(out, 1, sizeof out - 1, f) : 0;
     if (f) pclose(f);
+    out[n] = '\0';
     check("color", n > 0 && strstr(out, "\x1b[38;2;10;20;30m") != NULL,
           "a saved --color should paint the logo in that colour at full brightness");
 
@@ -259,6 +263,41 @@ static void cli_checks(void) {
              " && printf 'CPU: x\\n' | HOME=%s %s/ffanim --once --stdin >/dev/null",
              home, home, dir);
     check("pref-damaged", system(cmd) == 0, "a damaged preference file must not stop ffanim");
+
+    snprintf(cmd, sizeof cmd, "HOME=%s %s/ffanim --on", home, dir);
+    FILE *g = popen(cmd, "r");
+    n = g ? fread(out, 1, sizeof out - 1, g) : 0;
+    if (g) pclose(g);
+    out[n] = '\0';
+    int nudged = n > 0 && strstr(out, "shell config") != NULL;
+    snprintf(cmd, sizeof cmd, "%s/.zshrc", home);
+    FILE *rc = fopen(cmd, "w");
+    if (rc) { fputs("# ffanim starts here\n", rc); fclose(rc); }
+    snprintf(cmd, sizeof cmd, "HOME=%s %s/ffanim --on", home, dir);
+    g = popen(cmd, "r");
+    n = g ? fread(out, 1, sizeof out - 1, g) : 0;
+    if (g) pclose(g);
+    out[n] = '\0';
+    snprintf(cmd, sizeof cmd,
+             "printf 'export X=1\\n' > %s/.bashrc"
+             " && HOME=%s SHELL=/bin/bash %s/ffanim --setup >/dev/null"
+             " && HOME=%s SHELL=/bin/bash %s/ffanim --setup >/dev/null"
+             " && [ \"$(grep -c '>>> ffanim >>>' %s/.bashrc)\" = 1 ]"
+             " && grep -q 'export X=1' %s/.bashrc",
+             home, home, dir, home, dir, home, home);
+    check("setup", system(cmd) == 0,
+          "--setup should add one marked block and keep what the file already had");
+
+    snprintf(cmd, sizeof cmd,
+             "HOME=%s SHELL=/bin/bash %s/ffanim --unsetup >/dev/null"
+             " && ! grep -q ffanim %s/.bashrc"
+             " && grep -q 'export X=1' %s/.bashrc",
+             home, dir, home, home);
+    check("unsetup", system(cmd) == 0,
+          "--unsetup should take the block out and leave the rest of the file alone");
+
+    check("off-hint", nudged && !(n > 0 && strstr(out, "shell config")),
+          "--on should say so when no shell config starts ffanim, and stay quiet when one does");
     unsetenv("FFANIM_LOGO");
 }
 

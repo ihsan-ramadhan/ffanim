@@ -14,11 +14,15 @@ your `config.jsonc` already prints is what shows up beside the logo.
     curl -fsSL https://raw.githubusercontent.com/ihsan-ramadhan/ffanim/main/install.sh | sh
 
 Linux, fastfetch, a C compiler. No libraries beyond libc and libm. The script
-fetches this repo, builds it, and leaves `ffanim` in `~/.local/bin` with an
-example logo in `~/.local/share/ffanim/`. Set `PREFIX=/usr/local` to move both.
-Nothing is written to your config. See it move, then press Ctrl-C:
+fetches this repo, builds it, leaves `ffanim` in `~/.local/bin` with an example
+logo in `~/.local/share/ffanim/`, and starts it from your shell config. Open a
+new terminal and it is there.
 
-    ffanim
+The shell part is one marked block appended to `config.fish`, `.zshrc` or
+`.bashrc`, whichever matches your `$SHELL`, and your old file is copied to
+`<file>.ffanim.bak` first. `ffanim --unsetup` takes the block back out, and
+`FFANIM_NO_SETUP=1` on the install line skips that step entirely. Set
+`PREFIX=/usr/local` to move the files.
 
 ## Animations
 
@@ -48,12 +52,13 @@ change every row. On a 16 row logo at 20 fps that is 13 KiB/s against 42 KiB/s,
 both far below anything you would notice.
 
 <details>
-<summary><b>Put it in your shell</b></summary>
+<summary><b>The two ways to run it</b></summary>
 
-Two ways to run it, and they are a real choice rather than two spellings of the
-same thing.
+They are a real choice rather than two spellings of the same thing. `--setup`
+writes the second one.
 
-**Pinned above your prompt.** `~/.config/fish/config.fish`:
+**Pinned above your prompt.** Not what `--setup` writes, so this one is by hand:
+run `ffanim --unsetup` first, then in `~/.config/fish/config.fish`:
 
     function fish_greeting
         type -q ffanim; or return
@@ -70,20 +75,8 @@ never enters the terminal's buffer. It holds its place no matter how much you
 print, and scrolling up will not find it in your history, because it was never
 written there.
 
-**Scrolling away like ordinary output.** `~/.config/fish/config.fish`:
-
-    if status is-interactive; and not set -q FFANIM_WRAPPED; and type -q ffanim
-        fastfetch --logo none --pipe false | ffanim --wrap --stdin
-        set -l rc $status
-        exec sh -c "exit $rc"
-    end
-
-bash or zsh:
-
-    if [[ $- == *i* && -z $FFANIM_WRAPPED ]]; then
-        fastfetch --logo none --pipe false | ffanim --wrap --stdin
-        exec sh -c "exit $?"
-    fi
+**Scrolling away like ordinary output.** This is what `--setup` writes, so there
+is nothing to paste.
 
 ffanim prints the block, starts your shell on a pty of its own, and relays
 between that pty and the terminal. Every byte passes through it, so it knows the
@@ -120,6 +113,8 @@ what a script wants, and the only mode that works with no terminal at all.
 | `--anim <name>` | save the animation: sweep, wave, pulse or bounce |
 | `--color <r,g,b>` | save the logo colour at full brightness, default 255,255,255 |
 | `--off`, `--on` | stop animating, start again |
+| `--setup` | start ffanim from your shell config, in a marked block |
+| `--unsetup` | take that block back out |
 | `--uninstall` | delete ffanim and the logo it installed |
 | `--version` | print the version and exit |
 | `--fps <n>` | frames per second, default 20 |
@@ -190,10 +185,11 @@ empty file at `~/.config/ffanim/off`, so a second terminal picks it up too.
 
     ffanim --uninstall
 
-That deletes ffanim itself and the example logo, then names any shell config
-that still starts ffanim. Delete that block and your greeting goes back to what
-it was before, usually plain fastfetch. From a clone, `make uninstall` reaches
-the same two files.
+That takes the marked block out of your shell config, deletes ffanim itself and
+the example logo, and names any other file that still mentions ffanim, for
+setups written by hand. Your greeting goes back to what it was before, usually
+plain fastfetch. From a clone, `make uninstall` reaches the two files but leaves
+your shell config alone.
 
 </details>
 

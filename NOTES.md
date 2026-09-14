@@ -287,9 +287,12 @@ cost is not reduced but zero. It reopens stdin from `/dev/tty` before the exec,
 because in the pipeline that stdin is the fastfetch pipe and a shell handed an
 exhausted pipe exits immediately.
 
-Neither touches your shell config. A program that rewrites the file you start
-your session from has to be right every time, and the upside here was never
-worth that.
+Neither touches your shell config, because neither has to. `--setup` is the one
+that writes there, and it earns it by being reversible: a block between two
+markers, appended to the end, with the old file copied to `<file>.ffanim.bak`
+first. `--unsetup` cuts exactly that block back out, which is also what
+`--uninstall` calls, so nothing is left behind pointing at a binary that is
+gone.
 
 ## Cost, measured against fastfetch
 

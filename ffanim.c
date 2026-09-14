@@ -1082,6 +1082,124 @@ static void load_prefs(void) {
     if (pref_read("color", v, sizeof v)) color_parse(v, &col_r, &col_g, &col_b);
 }
 
+#define MARK_BEGIN "# >>> ffanim >>>"
+#define MARK_END "# <<< ffanim <<<"
+
+static const char FISH_BLOCK[] =
+    "\n" MARK_BEGIN "\n"
+    "if status is-interactive; and type -q ffanim\n"
+    "    if set -q FFANIM_WRAPPED\n"
+    "        function fish_greeting\n"
+    "        end\n"
+    "    else\n"
+    "        fastfetch --logo none --pipe false | ffanim --wrap --stdin\n"
+    "        set -l rc $status\n"
+    "        exec sh -c \"exit $rc\"\n"
+    "    end\n"
+    "end\n"
+    MARK_END "\n";
+
+static const char POSIX_BLOCK[] =
+    "\n" MARK_BEGIN "\n"
+    "if [ -z \"$FFANIM_WRAPPED\" ] && [ -t 1 ] && command -v ffanim >/dev/null; then\n"
+    "    fastfetch --logo none --pipe false | ffanim --wrap --stdin\n"
+    "    exec sh -c \"exit $?\"\n"
+    "fi\n"
+    MARK_END "\n";
+
+static const char *rc_path(char *buf, size_t n, int *fish) {
+    const char *home = getenv("HOME");
+    const char *sh = getenv("SHELL");
+    const char *base = sh && strrchr(sh, '/') ? strrchr(sh, '/') + 1 : sh;
+    if (!home) return NULL;
+    *fish = base && !strcmp(base, "fish");
+    if (*fish) snprintf(buf, n, "%s/.config/fish/config.fish", home);
+    else if (base && !strcmp(base, "zsh")) snprintf(buf, n, "%s/.zshrc", home);
+    else snprintf(buf, n, "%s/.bashrc", home);
+    return buf;
+}
+
+static int setup(void) {
+    char path[4096], bak[4200], d[4096];
+    int fish = 0;
+    if (!rc_path(path, sizeof path, &fish)) die("ffanim: HOME is not set");
+    char *cur = access(path, R_OK) == 0 ? read_file(path) : NULL;
+    if (cur && strstr(cur, MARK_BEGIN)) {
+        printf("ffanim is already in %s\n", path);
+        free(cur);
+        return 0;
+    }
+    if (cur) {
+        snprintf(bak, sizeof bak, "%s.ffanim.bak", path);
+        FILE *b = fopen(bak, "w");
+        if (!b) die("ffanim: cannot write %s: %s", bak, strerror(errno));
+        fprintf(b, "%s\n", cur);
+        fclose(b);
+        printf("copied your %s to %s\n", path, bak);
+    }
+    if (fish) {
+        snprintf(d, sizeof d, "%s/.config", getenv("HOME"));
+        mkdir(d, 0755);
+        snprintf(d, sizeof d, "%s/.config/fish", getenv("HOME"));
+        mkdir(d, 0755);
+    }
+    FILE *f = fopen(path, "a");
+    if (!f) die("ffanim: cannot write %s: %s", path, strerror(errno));
+    fputs(fish ? FISH_BLOCK : POSIX_BLOCK, f);
+    fclose(f);
+    free(cur);
+    printf("added ffanim to %s, open a new terminal to see it\n", path);
+    return 0;
+}
+
+static int unsetup(int report) {
+    char path[4096];
+    int fish = 0;
+    if (!rc_path(path, sizeof path, &fish) || access(path, R_OK)) return 0;
+    char *cur = read_file(path);
+    char *a = strstr(cur, MARK_BEGIN);
+    char *b = a ? strstr(a, MARK_END) : NULL;
+    if (!b) {
+        free(cur);
+        return 0;
+    }
+    b += strlen(MARK_END);
+    if (*b == '\n') b++;
+    if (a > cur && a[-1] == '\n') a--;
+    FILE *f = fopen(path, "w");
+    if (!f) die("ffanim: cannot write %s: %s", path, strerror(errno));
+    fwrite(cur, 1, (size_t)(a - cur), f);
+    fprintf(f, "%s\n", b);
+    fclose(f);
+    free(cur);
+    if (report) printf("took the ffanim block out of %s\n", path);
+    return 1;
+}
+
+static int shell_starts_ffanim(int report) {
+    const char *home = getenv("HOME");
+    const char *rc[] = { ".config/fish/config.fish", ".bashrc", ".zshrc" };
+    char path[4096];
+    int found = 0;
+    for (size_t i = 0; home && i < sizeof rc / sizeof *rc; i++) {
+        snprintf(path, sizeof path, "%s/%s", home, rc[i]);
+        if (access(path, R_OK)) continue;
+        char *t = read_file(path);
+        if (strstr(t, "ffanim")) {
+            found++;
+            if (report) printf("still starts ffanim, delete that block: %s\n", path);
+        }
+        free(t);
+    }
+    return found;
+}
+
+static void nudge_setup(void) {
+    if (!shell_starts_ffanim(0))
+        puts("nothing in your shell config starts ffanim yet, so this changes "
+             "nothing until it does: run ffanim --setup");
+}
+
 static int off(void) {
     const char *p = pref_path("off");
     return p && access(p, F_OK) == 0;
@@ -1094,10 +1212,12 @@ static int set_off(int want) {
         if (unlink(p) < 0 && errno != ENOENT)
             die("ffanim: cannot remove %s: %s", p, strerror(errno));
         puts("ffanim on");
+        nudge_setup();
         return 0;
     }
     pref_write("off", "");
     puts("ffanim off, the block still prints but nothing animates");
+    nudge_setup();
     return 0;
 }
 
@@ -1114,16 +1234,8 @@ static int uninstall(void) {
     if (unlink(exe) < 0) die("ffanim: cannot remove %s: %s", exe, strerror(errno));
     printf("removed %s\n", exe);
 
-    const char *home = getenv("HOME");
-    const char *rc[] = { ".config/fish/config.fish", ".bashrc", ".zshrc" };
-    for (size_t i = 0; home && i < sizeof rc / sizeof *rc; i++) {
-        snprintf(path, sizeof path, "%s/%s", home, rc[i]);
-        if (access(path, R_OK)) continue;
-        char *t = read_file(path);
-        if (strstr(t, "ffanim"))
-            printf("still starts ffanim, delete that block: %s\n", path);
-        free(t);
-    }
+    unsetup(1);
+    shell_starts_ffanim(1);
     return 0;
 }
 
@@ -1137,6 +1249,9 @@ static void usage(void) {
          "                           ordinary output that scrolls away, and keeps\n"
          "                           animating until it does\n"
          "  ffanim                   animate in place, Ctrl-C to quit\n"
+         "  ffanim --setup           start ffanim from your shell config, in a\n"
+         "                           marked block, keeping a copy of the old file\n"
+         "  ffanim --unsetup         take that block back out\n"
          "  ffanim --off             print the block but skip the animation\n"
          "  ffanim --on              animate again\n"
          "  ffanim --anim <name>     use sweep (default), wave, pulse or bounce\n"
@@ -1163,11 +1278,7 @@ static void usage(void) {
          "used to land it after a resize exactly where it starts in a fresh\n"
          "terminal. 2 suits a prompt with one leading blank line.\n"
          "\n"
-         "In ~/.config/fish/config.fish:\n"
-         "  function fish_greeting\n"
-         "      type -q ffanim; or return\n"
-         "      fastfetch --logo none --pipe false | ffanim --pin --stdin\n"
-         "  end");
+         "ffanim --setup writes the block that starts this from your shell.");
 }
 
 static void set_paths(void) {
@@ -1211,6 +1322,11 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--once")) once = 1;
         else if (!strcmp(a, "--wrap")) wrap = 1;
         else if (!strcmp(a, "--stdin")) from_stdin = 1;
+        else if (!strcmp(a, "--setup")) return setup();
+        else if (!strcmp(a, "--unsetup")) {
+            if (!unsetup(1)) puts("no ffanim block to take out");
+            return 0;
+        }
         else if (!strcmp(a, "--off")) return set_off(1);
         else if (!strcmp(a, "--on")) return set_off(0);
         else if (!strcmp(a, "--uninstall")) return uninstall();

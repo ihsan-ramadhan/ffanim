@@ -16,7 +16,11 @@ curl -fsSL "$repo/archive/$ref.tar.gz" | tar xz -C "$tmp" --strip-components 1
 make -s -C "$tmp" install PREFIX="$prefix"
 
 echo "ffanim installed to $prefix/bin/ffanim"
-echo "to start it with every terminal: $repo#put-it-in-your-shell"
+if [ -n "${FFANIM_NO_SETUP:-}" ]; then
+    echo "shell setup skipped: run ffanim --setup when you want it"
+else
+    "$prefix/bin/ffanim" --setup
+fi
 echo "to remove it later: ffanim --uninstall"
 case ":$PATH:" in
 *":$prefix/bin:"*) ;;
