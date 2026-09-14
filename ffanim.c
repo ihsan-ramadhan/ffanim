@@ -19,6 +19,8 @@
 #define DATADIR "/usr/local/share"
 #endif
 
+#define VERSION "0.1.0"
+
 #define GAP 3
 #define MINLOGO 14
 #define MININFO 20
@@ -1142,6 +1144,7 @@ static void usage(void) {
          "  ffanim --color <r,g,b>   colour of the logo at full brightness, also\n"
          "                           saved (default 255,255,255)\n"
          "  ffanim --uninstall       delete ffanim and the logo it installed\n"
+         "  ffanim --version         print the version and exit\n"
          "\n"
          "  --stdin                  read the info pane from stdin instead of\n"
          "                           running fastfetch. Prefer this: fastfetch\n"
@@ -1217,6 +1220,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--anim") && i + 1 < argc) want_anim = argv[++i];
         else if (!strcmp(a, "--color") && i + 1 < argc) want_color = argv[++i];
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) { usage(); return 0; }
+        else if (!strcmp(a, "--version")) { puts("ffanim " VERSION); return 0; }
         else die("ffanim: unknown option %s (try --help)", a);
     }
     if (want_anim || want_color) {

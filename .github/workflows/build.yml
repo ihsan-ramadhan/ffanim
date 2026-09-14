@@ -1,0 +1,22 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        cc: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+      - name: compile with ${{ matrix.cc }}
+        run: make CC=${{ matrix.cc }} CFLAGS='-O2 -Wall -Wextra -Werror -std=gnu99' ffanim test_pin
+      - name: print one frame
+        run: |
+          printf 'CPU: x\nMem: y\n' | FFANIM_LOGO=logo_braille ./ffanim --once --stdin
+      - name: version
+        run: ./ffanim --version

@@ -121,6 +121,7 @@ what a script wants, and the only mode that works with no terminal at all.
 | `--color <r,g,b>` | save the logo colour at full brightness, default 255,255,255 |
 | `--off`, `--on` | stop animating, start again |
 | `--uninstall` | delete ffanim and the logo it installed |
+| `--version` | print the version and exit |
 | `--fps <n>` | frames per second, default 20 |
 | `--step <n>` | rows the band moves per frame, default 0.35 |
 | `--refresh <n>` | re-read the info pane every n seconds, default off |
@@ -195,6 +196,12 @@ it was before, usually plain fastfetch. From a clone, `make uninstall` reaches
 the same two files.
 
 </details>
+
+## Credits
+
+ffanim probes nothing. The OS, kernel, uptime and everything else in that pane
+is [fastfetch](https://github.com/fastfetch-cli/fastfetch) output, read straight
+from its stdout and reprinted beside the animated logo.
 
 ## License
 
