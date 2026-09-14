@@ -174,6 +174,8 @@ static void cleanup(void) {
     if (conf_dir[0]) {
         char p[700];
         snprintf(p, sizeof p, "%s/home/.config/ffanim/off", conf_dir); unlink(p);
+        snprintf(p, sizeof p, "%s/home/.config/ffanim/anim", conf_dir); unlink(p);
+        snprintf(p, sizeof p, "%s/home/.config/ffanim/color", conf_dir); unlink(p);
         snprintf(p, sizeof p, "%s/home/.config/ffanim", conf_dir); rmdir(p);
         snprintf(p, sizeof p, "%s/home/.config", conf_dir); rmdir(p);
         snprintf(p, sizeof p, "%s/home", conf_dir); rmdir(p);
@@ -209,6 +211,57 @@ static void start_shell(void) {
     }
 }
 
+static char home[400];
+
+static void make_home(void) {
+    char p[600];
+    snprintf(home, sizeof home, "%s/home", conf_dir);
+    mkdir(home, 0755);
+    snprintf(p, sizeof p, "%s/.config", home);
+    mkdir(p, 0755);
+    snprintf(p, sizeof p, "%s/.config/ffanim", home);
+    mkdir(p, 0755);
+}
+
+static void write_pref(const char *name, const char *value) {
+    char p[700];
+    snprintf(p, sizeof p, "%s/.config/ffanim/%s", home, name);
+    FILE *f = fopen(p, "w");
+    if (!f) die("test_pin: cannot write %s", p);
+    fprintf(f, "%s\n", value);
+    fclose(f);
+}
+
+static void cli_checks(void) {
+    char logo[512], cmd[1600], out[8192] = {0};
+    snprintf(logo, sizeof logo, "%s/logo_braille", dir);
+    setenv("FFANIM_LOGO", logo, 1);
+    make_home();
+
+    snprintf(cmd, sizeof cmd,
+             "HOME=%s %s/ffanim --color 10,20,30 >/dev/null && "
+             "printf 'CPU: x\\n' | HOME=%s %s/ffanim --once --stdin", home, dir, home, dir);
+    FILE *f = popen(cmd, "r");
+    size_t n = f ? fread(out, 1, sizeof out - 1, f) : 0;
+    if (f) pclose(f);
+    check("color", n > 0 && strstr(out, "\x1b[38;2;10;20;30m") != NULL,
+          "a saved --color should paint the logo in that colour at full brightness");
+
+    snprintf(cmd, sizeof cmd, "HOME=%s %s/ffanim --anim nope 2>/dev/null", home, dir);
+    check("anim-name", system(cmd) != 0, "--anim should reject a name it does not know");
+
+    snprintf(cmd, sizeof cmd, "HOME=%s %s/ffanim --anim wave >/dev/null"
+             " && grep -qx wave %s/.config/ffanim/anim", home, dir, home);
+    check("anim-saved", system(cmd) == 0,
+          "--anim should save the choice so the next terminal picks it up");
+
+    snprintf(cmd, sizeof cmd, "echo nonsense > %s/.config/ffanim/anim"
+             " && printf 'CPU: x\\n' | HOME=%s %s/ffanim --once --stdin >/dev/null",
+             home, home, dir);
+    check("pref-damaged", system(cmd) == 0, "a damaged preference file must not stop ffanim");
+    unsetenv("FFANIM_LOGO");
+}
+
 static void start_wrap(const char *home) {
     master = posix_openpt(O_RDWR | O_NOCTTY);
     if (master < 0 || grantpt(master) || unlockpt(master)) die("test_pin: no pty");
@@ -241,13 +294,8 @@ static void start_wrap(const char *home) {
 }
 
 static void off_checks(void) {
-    char home[400], path[700];
-    snprintf(home, sizeof home, "%s/home", conf_dir);
-    mkdir(home, 0755);
-    snprintf(path, sizeof path, "%s/.config", home);
-    mkdir(path, 0755);
-    snprintf(path, sizeof path, "%s/.config/ffanim", home);
-    mkdir(path, 0755);
+    char path[700];
+    make_home();
     snprintf(path, sizeof path, "%s/.config/ffanim/off", home);
     int fd = open(path, O_WRONLY | O_CREAT, 0644);
     if (fd < 0) die("test_pin: cannot write %s", path);
@@ -271,6 +319,8 @@ static void off_checks(void) {
     shell = 0;
     close(master);
     master = -1;
+    snprintf(path, sizeof path, "%s/.config/ffanim/off", home);
+    unlink(path);
 }
 
 static void wrap_checks(void) {
@@ -343,6 +393,7 @@ int main(void) {
     fclose(cf);
 
     atexit(cleanup);
+    cli_checks();
     off_checks();
     wrap_checks();
     start_shell();
@@ -395,6 +446,20 @@ int main(void) {
     check("refresh-identity", before > 0 && after > 0,
           "a refresh overwrote every line the shell produced (%d marked rows -> %d)",
           before, after);
+
+    write_pref("anim", "sweep");
+    send("fastfetch -c %s --logo none --pipe false | HOME=%s %s/ffanim --pin --stdin",
+         conf_path, home, dir);
+    pump(1.5);
+    double sweep = rate(2.0);
+    write_pref("anim", "pulse");
+    send("fastfetch -c %s --logo none --pipe false | HOME=%s %s/ffanim --pin --stdin",
+         conf_path, home, dir);
+    pump(1.5);
+    double pulse = rate(2.0);
+    check("anim-pulse", pulse > sweep * 2.0,
+          "pulse relights every row each frame and sweep only a few, so pulse should "
+          "cost far more (%.1f vs %.1f KiB/s)", pulse, sweep);
 
     if (failures) {
         printf("%d/%d failed\n", failures, total);

@@ -16,18 +16,39 @@ your `config.jsonc` already prints is what shows up beside the logo.
 Linux, fastfetch, a C compiler. No libraries beyond libc and libm. The script
 fetches this repo, builds it, and leaves `ffanim` in `~/.local/bin` with an
 example logo in `~/.local/share/ffanim/`. Set `PREFIX=/usr/local` to move both.
-Nothing is written to your config.
-
-From a clone it is the same two steps the script runs:
-
-    make
-    make install
-
-See it move, then press Ctrl-C:
+Nothing is written to your config. See it move, then press Ctrl-C:
 
     ffanim
 
-## Put it in your shell
+## Animations
+
+| `sweep`, the default | `wave` |
+|:--:|:--:|
+| <img src="docs/sweep.gif" width="240" alt="one lit band travelling down the logo"> | <img src="docs/wave.gif" width="240" alt="several lit bands travelling down the logo at once"> |
+| one band down the logo, then again from the top | several bands at once, never fully dark |
+| **`pulse`** | **`bounce`** |
+| <img src="docs/pulse.gif" width="240" alt="the whole logo brightening and dimming together"> | <img src="docs/bounce.gif" width="240" alt="a lit band turning around at the bottom of the logo"> |
+| the whole logo brightening and dimming together | a sweep that turns around instead of starting over |
+
+Pick one and it stays picked:
+
+    ffanim --anim wave
+    ffanim --color 120,200,255
+
+Both save and exit, so the snippet in your shell config never has to change and
+every terminal after that picks the new one up. The choice lives in
+`~/.config/ffanim/anim` and `~/.config/ffanim/color`, one word per file, and a
+file you damage is ignored rather than fatal. `--color` is the colour the logo
+reaches at full brightness, so `120,200,255` is a blue logo dimming to near
+black. `--fps` and `--step` set the speed of all four.
+
+Two of them cost more than the others. The painter only sends rows that changed,
+and sweep and bounce change three or four rows per frame while wave and pulse
+change every row. On a 16 row logo at 20 fps that is 13 KiB/s against 42 KiB/s,
+both far below anything you would notice.
+
+<details>
+<summary><b>Put it in your shell</b></summary>
 
 Two ways to run it, and they are a real choice rather than two spellings of the
 same thing.
@@ -73,8 +94,8 @@ left alone too: while one owns the screen ffanim paints nothing, and picks up
 again when it exits.
 
 What that costs is not speed. Measured here the relay adds 1.8 us per keystroke,
-against the 5 to 20 ms of input latency you already have, and carries 123 MB/s
-where a bare pty carries 155 MB/s, far past what a terminal can draw. What it
+against the 5 to 20 ms of input latency you already have, and carries 108 MB/s
+where a bare pty carries 115 MB/s, far past what a terminal can draw. What it
 costs is that your shell's parent is now ffanim, so if ffanim dies the session
 goes with it.
 
@@ -85,16 +106,21 @@ chain leads to ffanim.
 `--once` is not a third way to run it. It prints one frame and exits, which is
 what a script wants, and the only mode that works with no terminal at all.
 
-## Options
+</details>
+
+<details>
+<summary><b>Options and logos</b></summary>
 
 | | |
 |---|---|
 | `--pin [--stdin]` | pin above the shell and keep animating |
 | `--unpin` | stop it and release the scroll region |
+| `--wrap [--stdin]` | run your shell inside ffanim |
+| `--once` | print one static frame and exit |
+| `--anim <name>` | save the animation: sweep, wave, pulse or bounce |
+| `--color <r,g,b>` | save the logo colour at full brightness, default 255,255,255 |
 | `--off`, `--on` | stop animating, start again |
 | `--uninstall` | delete ffanim and the logo it installed |
-| `--once` | print one static frame and exit |
-| `--wrap [--stdin]` | run your shell inside ffanim, see below |
 | `--fps <n>` | frames per second, default 20 |
 | `--step <n>` | rows the band moves per frame, default 0.35 |
 | `--refresh <n>` | re-read the info pane every n seconds, default off |
@@ -119,7 +145,10 @@ one is all it takes to use your own:
     ~/.config/fastfetch/logo_braille
     $PREFIX/share/ffanim/logo_braille
 
-## What to expect
+</details>
+
+<details>
+<summary><b>What to expect</b></summary>
 
 Full-screen apps take the screen and the painter stays out of their way. vim,
 less, htop, a coding agent: it stops writing entirely until they exit, then
@@ -137,15 +166,18 @@ and memory go stale. `--refresh 30` keeps them current by re-reading fastfetch
 on that interval and replacing only the lines that actually move, leaving the
 rest as your shell produced them.
 
-It costs about 2.4 ms on top of the fastfetch you were already running, then
-1.6 MB, 0.22 % of one core and 21 KiB/s to the terminal while it animates at
-20 fps.
+It costs about a millisecond on top of the fastfetch you were already running,
+more with a large logo, then 1.6 MB, 0.22 % of one core and 21 KiB/s to the
+terminal while it animates at 20 fps.
 
 [NOTES.md](NOTES.md) has the reasoning behind each of those, and the
 benchmarks. `make test` builds a second binary that pins a painter on a
 throwaway pty and checks all of it.
 
-## Turn it off
+</details>
+
+<details>
+<summary><b>Turn it off, or remove it</b></summary>
 
     ffanim --off
     ffanim --on
@@ -155,14 +187,14 @@ once, and nothing animates: under `--wrap` ffanim hands the terminal straight to
 your shell and is gone, under `--pin` it prints and exits. The switch is one
 empty file at `~/.config/ffanim/off`, so a second terminal picks it up too.
 
-## Uninstall
-
     ffanim --uninstall
 
-It deletes itself and the example logo, then names any shell config that still
-starts ffanim. Delete that block and your greeting goes back to what it was
-before, usually plain fastfetch. From a clone, `make uninstall` reaches the same
-two files.
+That deletes ffanim itself and the example logo, then names any shell config
+that still starts ffanim. Delete that block and your greeting goes back to what
+it was before, usually plain fastfetch. From a clone, `make uninstall` reaches
+the same two files.
+
+</details>
 
 ## License
 

@@ -362,15 +362,57 @@ static void load(int from_stdin) {
     recompute();
 }
 
+enum { A_SWEEP, A_WAVE, A_PULSE, A_BOUNCE };
+static int anim = A_SWEEP;
+static int col_r = 255, col_g = 255, col_b = 255;
+
+static int anim_index(const char *s) {
+    static const char *names[] = { "sweep", "wave", "pulse", "bounce" };
+    for (int i = 0; i < 4; i++)
+        if (!strcmp(s, names[i])) return i;
+    return -1;
+}
+
+static int color_parse(const char *s, int *r, int *g, int *b) {
+    int x, y, z;
+    if (sscanf(s, "%d,%d,%d", &x, &y, &z) != 3) return -1;
+    if (x < 0 || y < 0 || z < 0 || x > 255 || y > 255 || z > 255) return -1;
+    *r = x;
+    *g = y;
+    *b = z;
+    return 0;
+}
+
+static double lit_at(double row, double pos) {
+    switch (anim) {
+    case A_WAVE: return 0.5 + 0.5 * sin((row - pos) * 0.6);
+    case A_PULSE: return 0.5 + 0.5 * sin(pos * 0.5);
+    default: {
+        double d = fabs(row - pos) / SPAN;
+        return d < 1.0 ? 1.0 - d : 0.0;
+    }
+    }
+}
+
+static double advance(double pos, double step) {
+    static double dir = 1.0;
+    switch (anim) {
+    case A_WAVE: case A_PULSE: return pos + step;
+    case A_BOUNCE:
+        if (pos > (double)nlines + SPAN) dir = -1.0;
+        else if (pos < -SPAN) dir = 1.0;
+        return pos + step * dir;
+    default: return pos > (double)nlines + SPAN ? -SPAN : pos + step;
+    }
+}
+
 static void row_text(buf *b, int r, double pos, int flat) {
     int drawn = 0;
     if (r >= 1 && r - 1 < nlines) {
-        double d = fabs((double)(r - 1) - pos) / SPAN;
-        double lit = 1.0 - d;
-        if (lit < 0.0) lit = 0.0;
-        double bright = flat ? 1.0 : DIM + (1.0 - DIM) * lit;
+        double bright = flat ? 1.0 : DIM + (1.0 - DIM) * lit_at(r - 1, pos);
         int v = (int)(70.0 + 185.0 * bright + 0.5);
-        buf_fmt(b, "\x1b[38;2;%d;%d;%dm", v, v, v);
+        buf_fmt(b, "\x1b[38;2;%d;%d;%dm", v * col_r / 255, v * col_g / 255,
+                v * col_b / 255);
         buf_str(b, lines[r - 1]);
         buf_str(b, "\x1b[m");
         drawn = vis_width(lines[r - 1]);
@@ -662,7 +704,7 @@ static void animate_pinned(int fd, double fps, double step, struct winsize last,
         }
         if (!paused && paint(fd, pos, 0, ws.ws_col, ws.ws_row) < 0) break;
         nap(1.0 / fps);
-        if (!paused) pos = pos > (double)nlines + SPAN ? -SPAN : pos + step;
+        if (!paused) pos = advance(pos, step);
     }
     unlink(pidfile_path());
 }
@@ -681,7 +723,7 @@ static void animate_inline(double fps, double step) {
         fflush(stdout);
         nap(1.0 / fps);
         printf("\x1b[%dA\r", rows - 1);
-        pos = pos > (double)nlines + SPAN ? -SPAN : pos + step;
+        pos = advance(pos, step);
     }
     print_static();
     fputs("\x1b[?25h", stdout);
@@ -984,7 +1026,7 @@ static int wrap_shell(double fps, double step) {
                 last_top = t.top;
             }
             if (paint_at(tty, t.top, pos, ws.ws_col, ws.ws_row) < 0) break;
-            pos = pos > (double)nlines + SPAN ? -SPAN : pos + step;
+            pos = advance(pos, step);
             next = now_sec() + 1.0 / fps;
         }
     }
@@ -996,21 +1038,55 @@ static int wrap_shell(double fps, double step) {
     return WIFEXITED(status) ? WEXITSTATUS(status) : 0;
 }
 
-static const char *off_path(void) {
+static const char *pref_path(const char *name) {
     static char p[4096];
     const char *home = getenv("HOME");
     if (!home) return NULL;
-    snprintf(p, sizeof p, "%s/.config/ffanim/off", home);
+    snprintf(p, sizeof p, "%s/.config/ffanim/%s", home, name);
     return p;
 }
 
+static void pref_write(const char *name, const char *value) {
+    const char *p = pref_path(name);
+    char d[4096];
+    if (!p) die("ffanim: HOME is not set");
+    snprintf(d, sizeof d, "%s/.config", getenv("HOME"));
+    mkdir(d, 0755);
+    snprintf(d, sizeof d, "%s/.config/ffanim", getenv("HOME"));
+    mkdir(d, 0755);
+    FILE *f = fopen(p, "w");
+    if (!f) die("ffanim: cannot write %s: %s", p, strerror(errno));
+    fprintf(f, "%s\n", value);
+    fclose(f);
+}
+
+static char *pref_read(const char *name, char *out, size_t n) {
+    const char *p = pref_path(name);
+    FILE *f = p ? fopen(p, "r") : NULL;
+    if (!f) return NULL;
+    char *got = fgets(out, (int)n, f);
+    fclose(f);
+    if (!got) return NULL;
+    out[strcspn(out, "\n")] = '\0';
+    return out;
+}
+
+static void load_prefs(void) {
+    char v[64];
+    if (pref_read("anim", v, sizeof v)) {
+        int i = anim_index(v);
+        if (i >= 0) anim = i;
+    }
+    if (pref_read("color", v, sizeof v)) color_parse(v, &col_r, &col_g, &col_b);
+}
+
 static int off(void) {
-    const char *p = off_path();
+    const char *p = pref_path("off");
     return p && access(p, F_OK) == 0;
 }
 
 static int set_off(int want) {
-    const char *p = off_path();
+    const char *p = pref_path("off");
     if (!p) die("ffanim: HOME is not set");
     if (!want) {
         if (unlink(p) < 0 && errno != ENOENT)
@@ -1018,14 +1094,7 @@ static int set_off(int want) {
         puts("ffanim on");
         return 0;
     }
-    char dir[4096];
-    snprintf(dir, sizeof dir, "%s/.config", getenv("HOME"));
-    mkdir(dir, 0755);
-    snprintf(dir, sizeof dir, "%s/.config/ffanim", getenv("HOME"));
-    mkdir(dir, 0755);
-    int fd = open(p, O_WRONLY | O_CREAT, 0644);
-    if (fd < 0) die("ffanim: cannot write %s: %s", p, strerror(errno));
-    close(fd);
+    pref_write("off", "");
     puts("ffanim off, the block still prints but nothing animates");
     return 0;
 }
@@ -1068,6 +1137,10 @@ static void usage(void) {
          "  ffanim                   animate in place, Ctrl-C to quit\n"
          "  ffanim --off             print the block but skip the animation\n"
          "  ffanim --on              animate again\n"
+         "  ffanim --anim <name>     use sweep (default), wave, pulse or bounce\n"
+         "                           from now on, saved in ~/.config/ffanim\n"
+         "  ffanim --color <r,g,b>   colour of the logo at full brightness, also\n"
+         "                           saved (default 255,255,255)\n"
          "  ffanim --uninstall       delete ffanim and the logo it installed\n"
          "\n"
          "  --stdin                  read the info pane from stdin instead of\n"
@@ -1125,6 +1198,7 @@ static void set_paths(void) {
 
 int main(int argc, char **argv) {
     int pin = 0, unpin = 0, once = 0, from_stdin = 0, wrap = 0;
+    const char *want_anim = NULL, *want_color = NULL;
     double fps = 20.0, step = 0.35, refresh = 0.0;
 
     for (int i = 1; i < argc; i++) {
@@ -1140,9 +1214,28 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--fps") && i + 1 < argc) fps = atof(argv[++i]);
         else if (!strcmp(a, "--step") && i + 1 < argc) step = atof(argv[++i]);
         else if (!strcmp(a, "--refresh") && i + 1 < argc) refresh = atof(argv[++i]);
+        else if (!strcmp(a, "--anim") && i + 1 < argc) want_anim = argv[++i];
+        else if (!strcmp(a, "--color") && i + 1 < argc) want_color = argv[++i];
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) { usage(); return 0; }
         else die("ffanim: unknown option %s (try --help)", a);
     }
+    if (want_anim || want_color) {
+        if (want_anim) {
+            if (anim_index(want_anim) < 0)
+                die("ffanim: unknown --anim %s (sweep, wave, pulse, bounce)", want_anim);
+            pref_write("anim", want_anim);
+            printf("ffanim anim %s\n", want_anim);
+        }
+        if (want_color) {
+            if (color_parse(want_color, &col_r, &col_g, &col_b) < 0)
+                die("ffanim: --color wants r,g,b from 0 to 255, like 120,200,255");
+            pref_write("color", want_color);
+            printf("ffanim color %s\n", want_color);
+        }
+        return 0;
+    }
+    load_prefs();
+
     if (pin + unpin + once + wrap > 1)
         die("ffanim: --pin, --unpin, --once and --wrap are exclusive");
     if (fps < 1.0 || fps > 120.0) die("ffanim: --fps must be between 1 and 120");

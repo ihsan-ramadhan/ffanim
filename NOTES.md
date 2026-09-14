@@ -113,9 +113,11 @@ rather than risking a frame painted over someone else's output. That also bounds
 the cost: the expensive path only runs while the block is still on screen, which
 is the first few seconds of a session. After that ffanim is a plain byte relay.
 
-Measured on this machine, that relay carries 123 MB/s where a bare pty carries
-155 MB/s, and scanning the stream for line feeds costs nothing next to the
-syscalls. A keystroke gains 1.8 us from the extra hop. Neither is the real cost.
+Measured on this machine against 82 MB of colour-heavy output, every line
+carrying an SGR sequence and an erase, best of five runs: the relay carries
+108 MB/s where a bare pty carries 115 MB/s, and scanning the stream for line
+feeds costs nothing next to the syscalls. A keystroke gains 1.8 us from the
+extra hop. Neither is the real cost.
 The real cost is that your shell's parent is now ffanim, so a crash takes the
 session with it, and that is a much larger blast radius than a painter you can
 kill without consequence.
@@ -232,6 +234,62 @@ height when the process has no terminal to measure.
 
 It is off by default. A probe is a fastfetch run, and a config carrying a module
 that goes to the network would stall the animation for as long as that takes.
+
+## The four animations
+
+Everything the animation does comes out of one function of two numbers, the row
+and the position of the light:
+
+    lit_at(row, pos)
+
+`sweep` is `1 - |row - pos| / SPAN`, one band with a hard edge. `wave` is
+`0.5 + 0.5 sin((row - pos) * 0.6)`, several bands at once and never fully dark.
+`pulse` drops `row` entirely and leaves `0.5 + 0.5 sin(pos * 0.5)`, so the whole
+logo moves together. `bounce` shares sweep's shape and only changes how `pos`
+advances, turning around at the ends instead of wrapping. Four behaviours, three
+lines of arithmetic, because the hard part was already there: one brightness per
+row, one SGR sequence per row.
+
+That structure is also the limit. A diagonal or a left to right wipe cannot be
+one colour per row, so `row_text` would have to walk braille cells and emit a
+colour every few columns. Ten times the bytes per frame for a much larger change
+than all four of these together, so it is not in.
+
+The row cache is what makes the difference visible in the numbers. The painter
+sends only rows whose text changed, and the two directional animations change
+three or four rows per frame while the other two change all of them. Measured on
+a 16 row logo at 20 fps, pinned:
+
+| | to the tty |
+|---|---|
+| `sweep` | 13.6 KiB/s |
+| `bounce` | 12.7 KiB/s |
+| `wave` | 42.4 KiB/s |
+| `pulse` | 42.4 KiB/s |
+
+Three times more for the two that defeat the cache, and still three orders of
+magnitude below what the relay carries.
+
+## Choosing, and switching off
+
+`--anim` and `--color` save and exit rather than applying to one run. The reason
+is the shell config: if they were per-run flags, every change would mean editing
+the snippet you pasted months ago, and that snippet is the one thing that should
+never need touching again. They write a word into `~/.config/ffanim/anim` and
+`~/.config/ffanim/color`, and ffanim reads them at startup. A value it does not
+recognise is ignored rather than fatal, because a damaged file should not be
+able to stop your greeting from appearing.
+
+`--off` is the same idea taken further: an empty file at `~/.config/ffanim/off`.
+When it exists, `--wrap` prints the block and then `exec`s your shell instead of
+building a pty and relaying, so ffanim leaves the process tree entirely and the
+cost is not reduced but zero. It reopens stdin from `/dev/tty` before the exec,
+because in the pipeline that stdin is the fastfetch pipe and a shell handed an
+exhausted pipe exits immediately.
+
+Neither touches your shell config. A program that rewrites the file you start
+your session from has to be right every time, and the upside here was never
+worth that.
 
 ## Cost, measured against fastfetch
 
