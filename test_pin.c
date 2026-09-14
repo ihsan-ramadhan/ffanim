@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <time.h>
@@ -170,7 +171,14 @@ static void cleanup(void) {
     }
     if (master >= 0) close(master);
     if (conf_path[0]) unlink(conf_path);
-    if (conf_dir[0]) rmdir(conf_dir);
+    if (conf_dir[0]) {
+        char p[700];
+        snprintf(p, sizeof p, "%s/home/.config/ffanim/off", conf_dir); unlink(p);
+        snprintf(p, sizeof p, "%s/home/.config/ffanim", conf_dir); rmdir(p);
+        snprintf(p, sizeof p, "%s/home/.config", conf_dir); rmdir(p);
+        snprintf(p, sizeof p, "%s/home", conf_dir); rmdir(p);
+        rmdir(conf_dir);
+    }
 }
 
 static void start_shell(void) {
@@ -201,7 +209,7 @@ static void start_shell(void) {
     }
 }
 
-static void wrap_checks(void) {
+static void start_wrap(const char *home) {
     master = posix_openpt(O_RDWR | O_NOCTTY);
     if (master < 0 || grantpt(master) || unlockpt(master)) die("test_pin: no pty");
     if (ptsname_r(master, slave_name, sizeof slave_name)) die("test_pin: no pty name");
@@ -222,12 +230,51 @@ static void wrap_checks(void) {
         snprintf(logo, sizeof logo, "%s/logo_braille", dir);
         setenv("FFANIM_LOGO", logo, 1);
         setenv("SHELL", "/bin/bash", 1);
+        setenv("HISTFILE", "", 1);
+        if (home) setenv("HOME", home, 1);
         snprintf(cmd, sizeof cmd,
                  "fastfetch -c %s --logo none --pipe false | %s/ffanim --wrap --stdin",
                  conf_path, dir);
         execlp("sh", "sh", "-c", cmd, (char *)NULL);
         _exit(127);
     }
+}
+
+static void off_checks(void) {
+    char home[400], path[700];
+    snprintf(home, sizeof home, "%s/home", conf_dir);
+    mkdir(home, 0755);
+    snprintf(path, sizeof path, "%s/.config", home);
+    mkdir(path, 0755);
+    snprintf(path, sizeof path, "%s/.config/ffanim", home);
+    mkdir(path, 0755);
+    snprintf(path, sizeof path, "%s/.config/ffanim/off", home);
+    int fd = open(path, O_WRONLY | O_CREAT, 0644);
+    if (fd < 0) die("test_pin: cannot write %s", path);
+    close(fd);
+
+    start_wrap(home);
+    size_t printed = pump(2.0);
+    check("off-prints", printed > 0, "--off must still print the block once");
+    cap_reset();
+    pump(2.0);
+    scan s = scan_output();
+    check("off-quiet", s.moves == 0, "--off must not animate, wrote %d moves", s.moves);
+
+    send("echo MARK''ER");
+    pump(1.5);
+    check("off-shell", memmem(cap, cap_len, "MARKER", 6) != NULL,
+          "--off must still hand the terminal to a working shell");
+
+    kill(shell, SIGKILL);
+    waitpid(shell, NULL, 0);
+    shell = 0;
+    close(master);
+    master = -1;
+}
+
+static void wrap_checks(void) {
+    start_wrap(NULL);
 
     pump(2.0);
     cap_reset();
@@ -296,6 +343,7 @@ int main(void) {
     fclose(cf);
 
     atexit(cleanup);
+    off_checks();
     wrap_checks();
     start_shell();
 

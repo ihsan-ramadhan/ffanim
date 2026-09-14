@@ -9,6 +9,7 @@
 #include <string.h>
 #include <poll.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <time.h>
@@ -995,6 +996,66 @@ static int wrap_shell(double fps, double step) {
     return WIFEXITED(status) ? WEXITSTATUS(status) : 0;
 }
 
+static const char *off_path(void) {
+    static char p[4096];
+    const char *home = getenv("HOME");
+    if (!home) return NULL;
+    snprintf(p, sizeof p, "%s/.config/ffanim/off", home);
+    return p;
+}
+
+static int off(void) {
+    const char *p = off_path();
+    return p && access(p, F_OK) == 0;
+}
+
+static int set_off(int want) {
+    const char *p = off_path();
+    if (!p) die("ffanim: HOME is not set");
+    if (!want) {
+        if (unlink(p) < 0 && errno != ENOENT)
+            die("ffanim: cannot remove %s: %s", p, strerror(errno));
+        puts("ffanim on");
+        return 0;
+    }
+    char dir[4096];
+    snprintf(dir, sizeof dir, "%s/.config", getenv("HOME"));
+    mkdir(dir, 0755);
+    snprintf(dir, sizeof dir, "%s/.config/ffanim", getenv("HOME"));
+    mkdir(dir, 0755);
+    int fd = open(p, O_WRONLY | O_CREAT, 0644);
+    if (fd < 0) die("ffanim: cannot write %s: %s", p, strerror(errno));
+    close(fd);
+    puts("ffanim off, the block still prints but nothing animates");
+    return 0;
+}
+
+static int uninstall(void) {
+    char exe[4096], path[4096];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    if (n <= 0) die("ffanim: cannot find my own path");
+    exe[n] = '\0';
+
+    snprintf(path, sizeof path, "%s/ffanim/logo_braille", DATADIR);
+    if (unlink(path) == 0) printf("removed %s\n", path);
+    snprintf(path, sizeof path, "%s/ffanim", DATADIR);
+    rmdir(path);
+    if (unlink(exe) < 0) die("ffanim: cannot remove %s: %s", exe, strerror(errno));
+    printf("removed %s\n", exe);
+
+    const char *home = getenv("HOME");
+    const char *rc[] = { ".config/fish/config.fish", ".bashrc", ".zshrc" };
+    for (size_t i = 0; home && i < sizeof rc / sizeof *rc; i++) {
+        snprintf(path, sizeof path, "%s/%s", home, rc[i]);
+        if (access(path, R_OK)) continue;
+        char *t = read_file(path);
+        if (strstr(t, "ffanim"))
+            printf("still starts ffanim, delete that block: %s\n", path);
+        free(t);
+    }
+    return 0;
+}
+
 static void usage(void) {
     puts("ffanim - animated fastfetch, pinned above a working shell\n"
          "\n"
@@ -1005,6 +1066,9 @@ static void usage(void) {
          "                           ordinary output that scrolls away, and keeps\n"
          "                           animating until it does\n"
          "  ffanim                   animate in place, Ctrl-C to quit\n"
+         "  ffanim --off             print the block but skip the animation\n"
+         "  ffanim --on              animate again\n"
+         "  ffanim --uninstall       delete ffanim and the logo it installed\n"
          "\n"
          "  --stdin                  read the info pane from stdin instead of\n"
          "                           running fastfetch. Prefer this: fastfetch\n"
@@ -1070,6 +1134,9 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--once")) once = 1;
         else if (!strcmp(a, "--wrap")) wrap = 1;
         else if (!strcmp(a, "--stdin")) from_stdin = 1;
+        else if (!strcmp(a, "--off")) return set_off(1);
+        else if (!strcmp(a, "--on")) return set_off(0);
+        else if (!strcmp(a, "--uninstall")) return uninstall();
         else if (!strcmp(a, "--fps") && i + 1 < argc) fps = atof(argv[++i]);
         else if (!strcmp(a, "--step") && i + 1 < argc) step = atof(argv[++i]);
         else if (!strcmp(a, "--refresh") && i + 1 < argc) refresh = atof(argv[++i]);
@@ -1098,8 +1165,20 @@ int main(int argc, char **argv) {
 
     load(from_stdin);
 
-    if (once) {
+    if (once || off()) {
         print_static();
+        if (!once && wrap) {
+            fflush(stdout);
+            int t = open("/dev/tty", O_RDWR);
+            if (t >= 0) {
+                dup2(t, 0);
+                if (t > 2) close(t);
+            }
+            setenv("FFANIM_WRAPPED", "1", 1);
+            const char *sh = getenv("SHELL");
+            if (!sh || !*sh) sh = "/bin/sh";
+            execl(sh, sh, (char *)NULL);
+        }
         return 0;
     }
 

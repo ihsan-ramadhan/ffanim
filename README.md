@@ -11,14 +11,19 @@ your `config.jsonc` already prints is what shows up beside the logo.
 
 ## Install
 
-Linux, fastfetch, a C compiler. No libraries beyond libc and libm.
+    curl -fsSL https://raw.githubusercontent.com/ihsan-ramadhan/ffanim/main/install.sh | sh
+
+Linux, fastfetch, a C compiler. No libraries beyond libc and libm. The script
+fetches this repo, builds it, and leaves `ffanim` in `~/.local/bin` with an
+example logo in `~/.local/share/ffanim/`. Set `PREFIX=/usr/local` to move both.
+Nothing is written to your config.
+
+From a clone it is the same two steps the script runs:
 
     make
     make install
 
-`ffanim` goes to `~/.local/bin` and an example logo to
-`~/.local/share/ffanim/`, both under `PREFIX=`. Nothing is written to your
-config. See it move, then press Ctrl-C:
+See it move, then press Ctrl-C:
 
     ffanim
 
@@ -86,6 +91,8 @@ what a script wants, and the only mode that works with no terminal at all.
 |---|---|
 | `--pin [--stdin]` | pin above the shell and keep animating |
 | `--unpin` | stop it and release the scroll region |
+| `--off`, `--on` | stop animating, start again |
+| `--uninstall` | delete ffanim and the logo it installed |
 | `--once` | print one static frame and exit |
 | `--wrap [--stdin]` | run your shell inside ffanim, see below |
 | `--fps <n>` | frames per second, default 20 |
@@ -137,6 +144,25 @@ It costs about 2.4 ms on top of the fastfetch you were already running, then
 [NOTES.md](NOTES.md) has the reasoning behind each of those, and the
 benchmarks. `make test` builds a second binary that pins a painter on a
 throwaway pty and checks all of it.
+
+## Turn it off
+
+    ffanim --off
+    ffanim --on
+
+Off leaves the snippet in your shell config where it is. The block still prints,
+once, and nothing animates: under `--wrap` ffanim hands the terminal straight to
+your shell and is gone, under `--pin` it prints and exits. The switch is one
+empty file at `~/.config/ffanim/off`, so a second terminal picks it up too.
+
+## Uninstall
+
+    ffanim --uninstall
+
+It deletes itself and the example logo, then names any shell config that still
+starts ffanim. Delete that block and your greeting goes back to what it was
+before, usually plain fastfetch. From a clone, `make uninstall` reaches the same
+two files.
 
 ## License
 

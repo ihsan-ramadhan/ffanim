@@ -17,7 +17,7 @@ test_pin: test_pin.c
 	$(CC) $(CFLAGS) -o $@ $<
 
 uninstall:
-	rm -f $(DESTDIR)$(PREFIX)/bin/ffanim
+	rm -f $(DESTDIR)$(PREFIX)/bin/ffanim $(DESTDIR)$(DATADIR)/ffanim/logo_braille
 
 clean:
 	rm -f ffanim test_pin
