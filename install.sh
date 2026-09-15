@@ -12,7 +12,15 @@ done
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 
-curl -fsSL "$repo/archive/$ref.tar.gz" | tar xz -C "$tmp" --strip-components 1
+url=
+for u in "$repo/archive/refs/tags/$ref.tar.gz" \
+         "$repo/archive/refs/heads/$ref.tar.gz" \
+         "$repo/archive/$ref.tar.gz"; do
+    if curl -fsIL -o /dev/null "$u"; then url=$u; break; fi
+done
+[ -n "$url" ] || { echo "ffanim: no such branch or tag: $ref" >&2; exit 1; }
+
+curl -fsSL "$url" | tar xz -C "$tmp" --strip-components 1
 make -s -C "$tmp" install PREFIX="$prefix"
 
 echo "ffanim installed to $prefix/bin/ffanim"

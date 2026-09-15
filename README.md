@@ -20,9 +20,20 @@ new terminal and it is there.
 
 The shell part is one marked block appended to `config.fish`, `.zshrc` or
 `.bashrc`, whichever matches your `$SHELL`, and your old file is copied to
-`<file>.ffanim.bak` first. `ffanim --unsetup` takes the block back out, and
-`FFANIM_NO_SETUP=1` on the install line skips that step entirely. Set
-`PREFIX=/usr/local` to move the files.
+`<file>.ffanim.bak` first. `ffanim --unsetup` takes the block back out,
+`ffanim --setup --pin` writes the pinned mode instead, and `FFANIM_NO_SETUP=1`
+on the install line skips the step entirely. Set `PREFIX=/usr/local` to move the
+files. Fish completions are installed alongside.
+
+`ffanim --status` answers the question you will have later:
+
+    ffanim 0.1.1
+      animation  glitch
+      colour     255,255,255 (default)
+      animating  yes
+      shell      started from /home/you/.config/fish/config.fish
+      logo       /home/you/.config/fastfetch/logo_braille
+      fastfetch  its own default config
 
 ## Animations
 
@@ -116,8 +127,9 @@ what a script wants, and the only mode that works with no terminal at all.
 | `--anim <name>` | save the animation: sweep, wave, pulse, bounce, glitch, ripple |
 | `--color <r,g,b>` | save the logo colour at full brightness, default 255,255,255 |
 | `--off`, `--on` | stop animating, start again |
-| `--setup` | start ffanim from your shell config, in a marked block |
+| `--setup [--pin]` | start ffanim from your shell config, in a marked block |
 | `--unsetup` | take that block back out |
+| `--status` | what is set, and which file starts it |
 | `--uninstall` | delete ffanim and the logo it installed |
 | `--version` | print the version and exit |
 | `--fps <n>` | frames per second, default 20 |

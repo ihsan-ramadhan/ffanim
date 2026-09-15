@@ -20,3 +20,15 @@ jobs:
           printf 'CPU: x\nMem: y\n' | FFANIM_LOGO=logo_braille ./ffanim --once --stdin
       - name: version
         run: ./ffanim --version
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install fastfetch
+        run: |
+          curl -fsSL -o /tmp/fastfetch.deb \
+            https://github.com/fastfetch-cli/fastfetch/releases/latest/download/fastfetch-linux-amd64.deb
+          sudo dpkg -i /tmp/fastfetch.deb
+      - name: make test
+        run: make test

@@ -327,6 +327,29 @@ first. `--unsetup` cuts exactly that block back out, which is also what
 `--uninstall` calls, so nothing is left behind pointing at a binary that is
 gone.
 
+## Characters that are not one column
+
+The tracker counts columns, and for a long time it counted one per character.
+That is wrong for CJK, for fullwidth forms and for most emoji, which take two,
+and for combining marks, which take none. The error only shows up as a delay:
+ffanim thinks the screen has scrolled less than it has, so it keeps painting
+after the block is gone, which lands the animation on top of whatever is there
+now. A remote shell whose banner or prompt carries wide characters is enough to
+trigger it.
+
+Measured before the fix, on an 80 column terminal, printing lines that are 120
+columns wide either way:
+
+| line content | printed lines before ffanim froze |
+|---|---|
+| 120 ASCII characters | 2 |
+| 60 CJK characters | 3 |
+
+Both should be 2. The fix is a compact width table, the usual ranges rather than
+the full Unicode tables, shared by the tracker and by `vis_width` so the block
+and the info pane agree on how wide a line is. Incomplete UTF-8 at the end of a
+read is held over to the next one rather than guessed at.
+
 ## Cost, measured against fastfetch
 
 The question is what the animation adds to a `fastfetch` you were going to run

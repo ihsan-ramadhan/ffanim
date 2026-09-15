@@ -348,6 +348,26 @@ static void cli_checks(void) {
     check("unsetup", system(cmd) == 0,
           "--unsetup should take the block out and leave the rest of the file alone");
 
+    snprintf(cmd, sizeof cmd,
+             "HOME=%s SHELL=/bin/bash %s/ffanim --unsetup >/dev/null;"
+             " HOME=%s SHELL=/bin/bash %s/ffanim --setup --pin >/dev/null"
+             " && grep -q -- '--pin --stdin' %s/.bashrc"
+             " && HOME=%s SHELL=/bin/bash %s/ffanim --unsetup >/dev/null",
+             home, dir, home, dir, home, home, dir);
+    check("setup-pin", system(cmd) == 0,
+          "--setup --pin should write the pinned block instead of the wrapped one");
+
+    snprintf(cmd, sizeof cmd,
+             "HOME=%s %s/ffanim --anim bounce >/dev/null"
+             " && HOME=%s SHELL=/bin/bash %s/ffanim --status", home, dir, home, dir);
+    FILE *st = popen(cmd, "r");
+    out[0] = '\0';
+    n = st ? fread(out, 1, sizeof out - 1, st) : 0;
+    if (st) pclose(st);
+    out[n] = '\0';
+    check("status", strstr(out, "bounce") && strstr(out, "animating"),
+          "--status should report the saved animation and whether it animates");
+
     check("off-hint", nudged && !(n > 0 && strstr(out, "shell config")),
           "--on should say so when no shell config starts ffanim, and stay quiet when one does");
     unsetenv("FFANIM_LOGO");
@@ -382,6 +402,24 @@ static void start_wrap(const char *home) {
         execlp("sh", "sh", "-c", cmd, (char *)NULL);
         _exit(127);
     }
+}
+
+static void wide_checks(void) {
+    start_wrap(NULL);
+    pump(2.0);
+    send("printf '\\u6f22%%.0s' {1..1000}; echo");
+    pump(2.0);
+    cap_reset();
+    pump(2.0);
+    scan s = scan_output();
+    check("wrap-wide", s.moves == 0,
+          "a line of 1000 double width characters is 20 screen rows, so the block "
+          "has scrolled and --wrap must stop painting (%d moves)", s.moves);
+    kill(shell, SIGKILL);
+    waitpid(shell, NULL, 0);
+    shell = 0;
+    close(master);
+    master = -1;
 }
 
 static void clear_checks(void) {
@@ -503,6 +541,7 @@ int main(void) {
 
     atexit(cleanup);
     cli_checks();
+    wide_checks();
     clear_checks();
     off_checks();
     wrap_checks();

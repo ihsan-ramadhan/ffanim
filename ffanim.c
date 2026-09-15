@@ -19,7 +19,7 @@
 #define DATADIR "/usr/local/share"
 #endif
 
-#define VERSION "0.1.0"
+#define VERSION "0.1.1"
 
 #define GAP 3
 #define MINLOGO 14
@@ -82,6 +82,43 @@ static void buf_pad(buf *b, int n) {
     while (n-- > 0) buf_add(b, " ", 1);
 }
 
+static unsigned utf8_next(const unsigned char **p) {
+    const unsigned char *s = *p;
+    unsigned cp;
+    if (*s < 0x80) {
+        cp = *s;
+        *p = s + 1;
+    } else if ((*s & 0xe0) == 0xc0 && s[1]) {
+        cp = ((unsigned)(*s & 0x1f) << 6) | (s[1] & 0x3fu);
+        *p = s + 2;
+    } else if ((*s & 0xf0) == 0xe0 && s[1] && s[2]) {
+        cp = ((unsigned)(*s & 0x0f) << 12) | ((s[1] & 0x3fu) << 6) | (s[2] & 0x3fu);
+        *p = s + 3;
+    } else if ((*s & 0xf8) == 0xf0 && s[1] && s[2] && s[3]) {
+        cp = ((unsigned)(*s & 0x07) << 18) | ((s[1] & 0x3fu) << 12) |
+             ((s[2] & 0x3fu) << 6) | (s[3] & 0x3fu);
+        *p = s + 4;
+    } else {
+        cp = *s;
+        *p = s + 1;
+    }
+    return cp;
+}
+
+static int cp_width(unsigned cp) {
+    if (cp < 0x20 || (cp >= 0x7f && cp < 0xa0)) return 0;
+    if ((cp >= 0x0300 && cp <= 0x036f) || (cp >= 0x200b && cp <= 0x200f) ||
+        (cp >= 0x1ab0 && cp <= 0x1aff) || (cp >= 0xfe00 && cp <= 0xfe0f)) return 0;
+    if ((cp >= 0x1100 && cp <= 0x115f) || (cp >= 0x2e80 && cp <= 0x303e) ||
+        (cp >= 0x3041 && cp <= 0x33ff) || (cp >= 0x3400 && cp <= 0x4dbf) ||
+        (cp >= 0x4e00 && cp <= 0x9fff) || (cp >= 0xa000 && cp <= 0xa4cf) ||
+        (cp >= 0xac00 && cp <= 0xd7a3) || (cp >= 0xf900 && cp <= 0xfaff) ||
+        (cp >= 0xfe30 && cp <= 0xfe6f) || (cp >= 0xff00 && cp <= 0xff60) ||
+        (cp >= 0xffe0 && cp <= 0xffe6) || (cp >= 0x1f300 && cp <= 0x1f64f) ||
+        (cp >= 0x1f900 && cp <= 0x1f9ff) || (cp >= 0x20000 && cp <= 0x3fffd)) return 2;
+    return 1;
+}
+
 static int vis_width(const char *s) {
     int w = 0;
     for (const unsigned char *p = (const unsigned char *)s; *p;) {
@@ -96,8 +133,7 @@ static int vis_width(const char *s) {
             }
             continue;
         }
-        if ((*p & 0xc0) != 0x80) w++;
-        p++;
+        w += cp_width(utf8_next(&p));
     }
     return w;
 }
@@ -172,28 +208,6 @@ static char *run_fastfetch(void) {
 static const int DOT_DX[8] = {0, 0, 0, 1, 1, 1, 0, 1};
 static const int DOT_DY[8] = {0, 1, 2, 0, 1, 2, 3, 3};
 
-static unsigned utf8_next(const unsigned char **p) {
-    const unsigned char *s = *p;
-    unsigned cp;
-    if (*s < 0x80) {
-        cp = *s;
-        *p = s + 1;
-    } else if ((*s & 0xe0) == 0xc0 && s[1]) {
-        cp = ((unsigned)(*s & 0x1f) << 6) | (s[1] & 0x3fu);
-        *p = s + 2;
-    } else if ((*s & 0xf0) == 0xe0 && s[1] && s[2]) {
-        cp = ((unsigned)(*s & 0x0f) << 12) | ((s[1] & 0x3fu) << 6) | (s[2] & 0x3fu);
-        *p = s + 3;
-    } else if ((*s & 0xf8) == 0xf0 && s[1] && s[2] && s[3]) {
-        cp = ((unsigned)(*s & 0x07) << 18) | ((s[1] & 0x3fu) << 12) |
-             ((s[2] & 0x3fu) << 6) | (s[3] & 0x3fu);
-        *p = s + 4;
-    } else {
-        cp = *s;
-        *p = s + 1;
-    }
-    return cp;
-}
 
 static int line_blank(const char *s) {
     for (const unsigned char *p = (const unsigned char *)s; *p;) {
@@ -929,7 +943,19 @@ static void tr_slice(track *t, const char *buf, size_t len) {
         if (c == '\t') { t->col = (t->col / 8 + 1) * 8; if (t->col >= t->w) t->col = t->w - 1; continue; }
         if (c < 0x20) continue;
         if ((c & 0xc0) == 0x80) continue;
-        if (++t->col >= t->w) { t->col = 0; tr_nl(t); }
+        unsigned cp = c;
+        int need = c >= 0xf0 ? 3 : c >= 0xe0 ? 2 : c >= 0xc0 ? 1 : 0;
+        if (need) {
+            if (i + (size_t)need > n) { i--; break; }
+            cp = c & (0x3fu >> need);
+            for (int k = 0; k < need; k++) cp = (cp << 6) | ((unsigned char)p[i + k] & 0x3fu);
+            i += (size_t)need;
+        }
+        int cw = cp_width(cp);
+        if (!cw) continue;
+        if (t->col + cw > t->w) { t->col = 0; tr_nl(t); }
+        t->col += cw;
+        if (t->col >= t->w) { t->col = 0; tr_nl(t); }
     }
     if (t->live && i < n) {
         size_t rest = n - i;
@@ -1152,6 +1178,22 @@ static void load_prefs(void) {
 #define MARK_BEGIN "# >>> ffanim >>>"
 #define MARK_END "# <<< ffanim <<<"
 
+static const char FISH_PIN_BLOCK[] =
+    "\n" MARK_BEGIN "\n"
+    "if status is-interactive; and type -q ffanim\n"
+    "    function fish_greeting\n"
+    "        fastfetch --logo none --pipe false | ffanim --pin --stdin\n"
+    "    end\n"
+    "end\n"
+    MARK_END "\n";
+
+static const char POSIX_PIN_BLOCK[] =
+    "\n" MARK_BEGIN "\n"
+    "if [ -t 1 ] && command -v ffanim >/dev/null; then\n"
+    "    fastfetch --logo none --pipe false | ffanim --pin --stdin\n"
+    "fi\n"
+    MARK_END "\n";
+
 static const char FISH_BLOCK[] =
     "\n" MARK_BEGIN "\n"
     "if status is-interactive; and type -q ffanim\n"
@@ -1186,7 +1228,7 @@ static const char *rc_path(char *buf, size_t n, int *fish) {
     return buf;
 }
 
-static int setup(void) {
+static int setup(int pin) {
     char path[4096], bak[4200], d[4096];
     int fish = 0;
     if (!rc_path(path, sizeof path, &fish)) die("ffanim: HOME is not set");
@@ -1212,10 +1254,12 @@ static int setup(void) {
     }
     FILE *f = fopen(path, "a");
     if (!f) die("ffanim: cannot write %s: %s", path, strerror(errno));
-    fputs(fish ? FISH_BLOCK : POSIX_BLOCK, f);
+    if (pin) fputs(fish ? FISH_PIN_BLOCK : POSIX_PIN_BLOCK, f);
+    else fputs(fish ? FISH_BLOCK : POSIX_BLOCK, f);
     fclose(f);
     free(cur);
-    printf("added ffanim to %s, open a new terminal to see it\n", path);
+    printf("added ffanim to %s (%s), open a new terminal to see it\n", path,
+           pin ? "pinned above the prompt" : "scrolling away with the output");
     return 0;
 }
 
@@ -1288,6 +1332,35 @@ static int set_off(int want) {
     return 0;
 }
 
+static void set_paths(void);
+
+static int status(void) {
+    char v[64], path[4096];
+    int fish = 0;
+    set_paths();
+    printf("ffanim %s\n", VERSION);
+    printf("  animation  %s\n", pref_read("anim", v, sizeof v) ? v : "sweep (default)");
+    printf("  colour     %s\n",
+           pref_read("color", v, sizeof v) ? v : "255,255,255 (default)");
+    printf("  animating  %s\n", off() ? "no, ffanim --on brings it back" : "yes");
+    if (rc_path(path, sizeof path, &fish) && access(path, R_OK) == 0) {
+        char *cur = read_file(path);
+        if (strstr(cur, MARK_BEGIN))
+            printf("  shell      started from %s\n", path);
+        else if (strstr(cur, "ffanim"))
+            printf("  shell      started by hand from %s\n", path);
+        else
+            printf("  shell      nothing starts it yet, run ffanim --setup\n");
+        free(cur);
+    } else {
+        printf("  shell      nothing starts it yet, run ffanim --setup\n");
+    }
+    printf("  logo       %s%s\n", logo_path,
+           access(logo_path, R_OK) == 0 ? "" : " (missing)");
+    printf("  fastfetch  %s\n", cfg_path[0] ? cfg_path : "its own default config");
+    return 0;
+}
+
 static int uninstall(void) {
     char exe[4096], path[4096];
     ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
@@ -1316,8 +1389,10 @@ static void usage(void) {
          "                           ordinary output that scrolls away, and keeps\n"
          "                           animating until it does\n"
          "  ffanim                   animate in place, Ctrl-C to quit\n"
-         "  ffanim --setup           start ffanim from your shell config, in a\n"
-         "                           marked block, keeping a copy of the old file\n"
+         "  ffanim --setup [--pin]   start ffanim from your shell config, in a\n"
+         "                           marked block, keeping a copy of the old file.\n"
+         "                           --pin picks the mode that never scrolls\n"
+         "  ffanim --status          what is set, and which file starts it\n"
          "  ffanim --unsetup         take that block back out\n"
          "  ffanim --off             print the block but skip the animation\n"
          "  ffanim --on              animate again\n"
@@ -1380,6 +1455,7 @@ static void set_paths(void) {
 int main(int argc, char **argv) {
     int pin = 0, unpin = 0, once = 0, from_stdin = 0, wrap = 0;
     const char *want_anim = NULL, *want_color = NULL;
+    int want_setup = 0;
     double fps = 20.0, step = 0.35, refresh = 0.0;
 
     for (int i = 1; i < argc; i++) {
@@ -1389,7 +1465,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--once")) once = 1;
         else if (!strcmp(a, "--wrap")) wrap = 1;
         else if (!strcmp(a, "--stdin")) from_stdin = 1;
-        else if (!strcmp(a, "--setup")) return setup();
+        else if (!strcmp(a, "--setup")) want_setup = 1;
+        else if (!strcmp(a, "--status")) return status();
         else if (!strcmp(a, "--unsetup")) {
             if (!unsetup(1)) puts("no ffanim block to take out");
             return 0;
@@ -1406,6 +1483,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--version")) { puts("ffanim " VERSION); return 0; }
         else die("ffanim: unknown option %s (try --help)", a);
     }
+    if (want_setup) return setup(pin);
+
     if (want_anim || want_color) {
         if (want_anim) {
             if (anim_index(want_anim) < 0)
