@@ -37,13 +37,6 @@ The shell part is one marked block appended to `config.fish`, `.zshrc` or
 | <img src="docs/glitch.gif" width="240" alt="a band where the logo falls apart into loose dots and reassembles"> | <img src="docs/ripple.gif" width="240" alt="the logo bending from side to side as a wave runs down it"> |
 | dots knocked out by a passing band, then put back | rows slid sideways by a wave running down |
 
-The last two leave brightness alone and go after the braille dots themselves.
-`glitch` knocks dots out as its band passes, each in a fixed order of its own,
-and puts them back behind it. `ripple` slides whole rows sideways by up to three
-dots, so the logo bends as the wave runs down it. Neither is random per frame:
-the same position always draws the same logo. A logo that is not braille has no
-dots to work on, so both print it steady instead.
-
 Pick one and it stays picked:
 
     ffanim --anim wave

@@ -859,7 +859,11 @@ static int tr_csi(track *t, const char *p, int n, char fin) {
         t->row = (a[0] > 0 ? a[0] : 1) - 1;
         t->col = (na > 1 && a[1] > 0 ? a[1] : 1) - 1;
         break;
-    default: if (!strchr("JKmXP@hlncqtup", fin)) return 0;
+    case 'J':
+        if (a[0] == 2 || a[0] == 3) return 0;
+        if (a[0] == 1) return t->top <= t->row ? 0 : 1;
+        return t->top + rows - 1 >= t->row ? 0 : 1;
+    default: if (!strchr("KmXP@hlncqtup", fin)) return 0;
     }
     if (t->row < 0) t->row = 0;
     if (t->row >= t->h) { t->top -= t->row - (t->h - 1); t->row = t->h - 1; }

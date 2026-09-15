@@ -384,6 +384,24 @@ static void start_wrap(const char *home) {
     }
 }
 
+static void clear_checks(void) {
+    start_wrap(NULL);
+    pump(2.0);
+    send("printf '\\033[2J\\033[H'");
+    pump(1.5);
+    cap_reset();
+    pump(2.0);
+    scan s = scan_output();
+    check("wrap-clear-quiet", s.moves == 0,
+          "a full screen clear wipes the block, so --wrap must stop painting "
+          "instead of landing on whatever took its place (%d moves)", s.moves);
+    kill(shell, SIGKILL);
+    waitpid(shell, NULL, 0);
+    shell = 0;
+    close(master);
+    master = -1;
+}
+
 static void off_checks(void) {
     char path[700];
     make_home();
@@ -485,6 +503,7 @@ int main(void) {
 
     atexit(cleanup);
     cli_checks();
+    clear_checks();
     off_checks();
     wrap_checks();
     start_shell();
