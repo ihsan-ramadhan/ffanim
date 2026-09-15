@@ -1,3 +1,4 @@
 ffanim
 *.o
 test_pin
+RELEASE-v*.md

@@ -250,6 +250,37 @@ advances, turning around at the ends instead of wrapping. Four behaviours, three
 lines of arithmetic, because the hard part was already there: one brightness per
 row, one SGR sequence per row.
 
+An earlier fifth, `ember`, added a slow global term to wave. It measured 0.92
+correlation against wave over 400 frames, which is another way of saying it was
+wave, so it went.
+
+`glitch` is the one that leaves brightness alone. It works on the dots:
+`scale_logo` already decoded the braille into a bitmap in order to rescale it,
+so that bitmap was sitting there unused the rest of the time. Each dot gets a
+fixed order from a hash of its coordinates, and a band travelling down the logo
+knocks out the dots whose order falls under the band's bite, hardest at the
+centre and not at all beyond `SPAN`. Behind the band they come back. Nothing is
+random per frame, so the same `pos` always draws the same logo.
+
+It is the cheapest of the six rather than the dearest, 9.9 KiB/s against sweep's
+13.6, because only the rows the band is crossing differ from the frame before
+and the row cache drops the rest.
+
+`ripple` uses the same bitmap for the opposite kind of change. Instead of
+removing dots it moves them: every dot row is read back at an offset of
+`3 sin((row - pos) * 0.5)` dot columns, so the logo bends as the wave travels
+down it. That touches every row the wave covers, which is most of them, so it
+lands at 32.4 KiB/s, between the band animations and the ones that relight
+everything.
+
+A logo that is not braille has no dots to knock out or slide, so both render it
+steady rather than blank.
+
+The freeze in `--wrap` is worth one line here: when the screen scrolls, ffanim
+now paints one last frame with the animation flat before it stops, so what ends
+up in the scrollback is the whole logo rather than whatever the band happened to
+be eating at that moment.
+
 That structure is also the limit. A diagonal or a left to right wipe cannot be
 one colour per row, so `row_text` would have to walk braille cells and emit a
 colour every few columns. Ten times the bytes per frame for a much larger change
@@ -266,6 +297,8 @@ a 16 row logo at 20 fps, pinned:
 | `bounce` | 12.7 KiB/s |
 | `wave` | 42.4 KiB/s |
 | `pulse` | 42.4 KiB/s |
+| `glitch` | 9.9 KiB/s |
+| `ripple` | 32.4 KiB/s |
 
 Three times more for the two that defeat the cache, and still three orders of
 magnitude below what the relay carries.

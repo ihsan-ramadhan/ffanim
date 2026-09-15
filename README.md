@@ -33,6 +33,16 @@ The shell part is one marked block appended to `config.fish`, `.zshrc` or
 | **`pulse`** | **`bounce`** |
 | <img src="docs/pulse.gif" width="240" alt="the whole logo brightening and dimming together"> | <img src="docs/bounce.gif" width="240" alt="a lit band turning around at the bottom of the logo"> |
 | the whole logo brightening and dimming together | a sweep that turns around instead of starting over |
+| **`glitch`** | **`ripple`** |
+| <img src="docs/glitch.gif" width="240" alt="a band where the logo falls apart into loose dots and reassembles"> | <img src="docs/ripple.gif" width="240" alt="the logo bending from side to side as a wave runs down it"> |
+| dots knocked out by a passing band, then put back | rows slid sideways by a wave running down |
+
+The last two leave brightness alone and go after the braille dots themselves.
+`glitch` knocks dots out as its band passes, each in a fixed order of its own,
+and puts them back behind it. `ripple` slides whole rows sideways by up to three
+dots, so the logo bends as the wave runs down it. Neither is random per frame:
+the same position always draws the same logo. A logo that is not braille has no
+dots to work on, so both print it steady instead.
 
 Pick one and it stays picked:
 
@@ -44,12 +54,12 @@ every terminal after that picks the new one up. The choice lives in
 `~/.config/ffanim/anim` and `~/.config/ffanim/color`, one word per file, and a
 file you damage is ignored rather than fatal. `--color` is the colour the logo
 reaches at full brightness, so `120,200,255` is a blue logo dimming to near
-black. `--fps` and `--step` set the speed of all four.
+black. `--fps` and `--step` set the speed of all six.
 
-Two of them cost more than the others. The painter only sends rows that changed,
-and sweep and bounce change three or four rows per frame while wave and pulse
-change every row. On a 16 row logo at 20 fps that is 13 KiB/s against 42 KiB/s,
-both far below anything you would notice.
+They do not all cost the same. The painter only sends rows that changed, so the
+ones with a travelling band are cheap and the ones that touch every row are not.
+On a 16 row logo at 20 fps: glitch 10 KiB/s, sweep 14, ripple 32, wave and pulse
+42. All of it is far below anything you would notice.
 
 <details>
 <summary><b>The two ways to run it</b></summary>
@@ -110,7 +120,7 @@ what a script wants, and the only mode that works with no terminal at all.
 | `--unpin` | stop it and release the scroll region |
 | `--wrap [--stdin]` | run your shell inside ffanim |
 | `--once` | print one static frame and exit |
-| `--anim <name>` | save the animation: sweep, wave, pulse or bounce |
+| `--anim <name>` | save the animation: sweep, wave, pulse, bounce, glitch, ripple |
 | `--color <r,g,b>` | save the logo colour at full brightness, default 255,255,255 |
 | `--off`, `--on` | stop animating, start again |
 | `--setup` | start ffanim from your shell config, in a marked block |

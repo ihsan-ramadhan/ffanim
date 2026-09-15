@@ -135,6 +135,58 @@ static scan scan_output(void) {
     return s;
 }
 
+static double ink_per_row(void) {
+    int rows = scan_output().moves;
+    long ink = 0;
+    for (size_t i = 0; i + 2 < cap_len; i++) {
+        unsigned char a = (unsigned char)cap[i];
+        unsigned char b = (unsigned char)cap[i + 1];
+        unsigned char c = (unsigned char)cap[i + 2];
+        if (a == 0xe2 && b >= 0xa0 && b <= 0xa3 && c >= 0x80 && c <= 0xbf)
+            ink += __builtin_popcount((unsigned)((b & 0x03) << 6 | (c & 0x3f)));
+    }
+    return rows ? (double)ink / rows : 0.0;
+}
+
+static int bend_spread(void) {
+    int lo[MAXROWS], hi[MAXROWS];
+    for (int i = 0; i < MAXROWS; i++) { lo[i] = 1 << 20; hi[i] = -1; }
+    const unsigned char *p = (const unsigned char *)cap, *e = p + cap_len;
+    while (p < e) {
+        if (*p != 0x1b || p + 1 >= e || p[1] != '[') { p++; continue; }
+        const unsigned char *q = p + 2;
+        int first = -1, cur = -1;
+        while (q < e && ((*q >= '0' && *q <= '9') || *q == ';')) {
+            if (*q == ';') { first = cur; cur = -1; }
+            else cur = (cur < 0 ? 0 : cur) * 10 + (*q - '0');
+            q++;
+        }
+        if (q >= e) break;
+        if (*q == 'H' && first > 0 && first < MAXROWS && cur == 1) {
+            const unsigned char *t = q + 1;
+            int idx = 0, found = -1;
+            while (t + 2 < e && !(t[0] == 0x1b && t[1] == '[' && t[2] == 'K')) {
+                if (t[0] == 0xe2 && t[1] >= 0xa0 && t[1] <= 0xa3) {
+                    if (((t[1] & 3) << 6 | (t[2] & 0x3f)) && found < 0) found = idx;
+                    idx++;
+                    t += 3;
+                    continue;
+                }
+                t++;
+            }
+            if (found >= 0) {
+                if (found < lo[first]) lo[first] = found;
+                if (found > hi[first]) hi[first] = found;
+            }
+        }
+        p = q + 1;
+    }
+    int spread = 0;
+    for (int i = 0; i < MAXROWS; i++)
+        if (hi[i] >= 0 && hi[i] - lo[i] > spread) spread = hi[i] - lo[i];
+    return spread;
+}
+
 static void check(const char *name, int ok, const char *fmt, ...) {
     total++;
     if (ok) return;
@@ -496,6 +548,38 @@ int main(void) {
          conf_path, home, dir);
     pump(1.5);
     double pulse = rate(2.0);
+    write_pref("anim", "sweep");
+    send("fastfetch -c %s --logo none --pipe false | HOME=%s %s/ffanim --pin --stdin",
+         conf_path, home, dir);
+    pump(1.5);
+    cap_reset();
+    pump(2.0);
+    double solid = ink_per_row();
+    int straight = bend_spread();
+    write_pref("anim", "glitch");
+    send("fastfetch -c %s --logo none --pipe false | HOME=%s %s/ffanim --pin --stdin",
+         conf_path, home, dir);
+    pump(1.5);
+    cap_reset();
+    pump(2.0);
+    double eaten = ink_per_row();
+    int painted = scan_output().moves;
+    check("anim-glitch", painted > 20 && eaten < solid * 0.85,
+          "glitch should keep painting and eat dots as its band travels, so its "
+          "rows must carry fewer than sweep's (%d rows painted, %.0f dots vs %.0f)",
+          painted, eaten, solid);
+
+    write_pref("anim", "ripple");
+    send("fastfetch -c %s --logo none --pipe false | HOME=%s %s/ffanim --pin --stdin",
+         conf_path, home, dir);
+    pump(1.5);
+    cap_reset();
+    pump(2.0);
+    int bend = bend_spread();
+    check("anim-ripple", bend >= 2 && bend > straight,
+          "ripple should slide the logo sideways as the bend travels, sweep should "
+          "not (%d cells against %d)", bend, straight);
+
     check("anim-pulse", pulse > sweep * 2.0,
           "pulse relights every row each frame and sweep only a few, so pulse should "
           "cost far more (%.1f vs %.1f KiB/s)", pulse, sweep);

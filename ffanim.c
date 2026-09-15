@@ -257,12 +257,17 @@ static int logo_is_braille(void) {
     return 1;
 }
 
-static void scale_logo(int cx, int cy) {
-    int sw = width * 2, sh = nlines * 4;
-    int dw = cx * 2, dh = cy * 4;
-    unsigned char *src = calloc((size_t)sw * (size_t)sh, 1);
-    if (!src) return;
+static unsigned char *dotmap;
+static int dot_w, dot_h;
 
+static void dots_sync(void) {
+    int w = width * 2, h = nlines * 4;
+    if (dotmap && dot_w == w && dot_h == h) return;
+    free(dotmap);
+    dotmap = calloc((size_t)w * (size_t)h, 1);
+    dot_w = dotmap ? w : 0;
+    dot_h = dotmap ? h : 0;
+    if (!dotmap) return;
     for (int r = 0; r < nlines; r++) {
         const unsigned char *p = (const unsigned char *)lines[r];
         int c = 0;
@@ -272,11 +277,19 @@ static void scale_logo(int cx, int cy) {
                 unsigned v = cp - 0x2800;
                 for (int b = 0; b < 8; b++)
                     if (v >> b & 1)
-                        src[(size_t)(r * 4 + DOT_DY[b]) * sw + c * 2 + DOT_DX[b]] = 1;
+                        dotmap[(size_t)(r * 4 + DOT_DY[b]) * w + c * 2 + DOT_DX[b]] = 1;
             }
             c++;
         }
     }
+}
+
+static void scale_logo(int cx, int cy) {
+    int sw = width * 2, sh = nlines * 4;
+    int dw = cx * 2, dh = cy * 4;
+    dots_sync();
+    unsigned char *src = dotmap;
+    if (!src) return;
 
     char **out = xmalloc((size_t)cy * sizeof *out);
     for (int y = 0; y < cy; y++) {
@@ -310,7 +323,6 @@ static void scale_logo(int cx, int cy) {
         out[y] = b.s;
     }
 
-    free(src);
     lines = out;
     nlines = cy;
     width = cx;
@@ -364,13 +376,56 @@ static void load(int from_stdin) {
     recompute();
 }
 
-enum { A_SWEEP, A_WAVE, A_PULSE, A_BOUNCE };
+enum { A_SWEEP, A_WAVE, A_PULSE, A_BOUNCE, A_GLITCH, A_RIPPLE };
+#define BITE 0.7
+#define BEND 3.0
 static int anim = A_SWEEP;
+
+static double dot_order(int x, int y) {
+    unsigned h = (unsigned)x * 73856093u ^ (unsigned)y * 19349663u;
+    h ^= h >> 13;
+    h *= 0x5bd1e995u;
+    h ^= h >> 15;
+    double rnd = (double)(h % 1024) / 1024.0;
+    double down = dot_h > 1 ? (double)y / (double)(dot_h - 1) : 0.0;
+    return 0.55 * rnd + 0.45 * down;
+}
+
+static int dot_row(buf *b, int r, double pos) {
+    dots_sync();
+    for (int x = 0; x < width; x++) {
+        unsigned v = 0;
+        for (int d = 0; d < 8; d++) {
+            int dx = x * 2 + DOT_DX[d], dy = r * 4 + DOT_DY[d];
+            if (dy >= dot_h) continue;
+            if (anim == A_RIPPLE) {
+                dx -= (int)lround(BEND * sin(((double)dy / 4.0 - pos) * 0.5));
+                if (dx >= 0 && dx < dot_w && dotmap[(size_t)dy * dot_w + dx])
+                    v |= 1u << d;
+                continue;
+            }
+            if (dx >= dot_w) continue;
+            if (!dotmap[(size_t)dy * dot_w + dx]) continue;
+            double away = fabs((double)dy / 4.0 - pos) / SPAN;
+            double gone = away < 1.0 ? BITE * (1.0 - away) : 0.0;
+            if (dot_order(dx, dy) > gone) v |= 1u << d;
+        }
+        unsigned cp = 0x2800u + v;
+        char u[3];
+        u[0] = (char)(0xe0 | (cp >> 12));
+        u[1] = (char)(0x80 | ((cp >> 6) & 0x3f));
+        u[2] = (char)(0x80 | (cp & 0x3f));
+        buf_add(b, u, 3);
+    }
+    return width;
+}
+
 static int col_r = 255, col_g = 255, col_b = 255;
 
 static int anim_index(const char *s) {
-    static const char *names[] = { "sweep", "wave", "pulse", "bounce" };
-    for (int i = 0; i < 4; i++)
+    static const char *names[] = { "sweep", "wave", "pulse", "bounce", "glitch",
+                                   "ripple" };
+    for (int i = 0; i < 6; i++)
         if (!strcmp(s, names[i])) return i;
     return -1;
 }
@@ -389,6 +444,7 @@ static double lit_at(double row, double pos) {
     switch (anim) {
     case A_WAVE: return 0.5 + 0.5 * sin((row - pos) * 0.6);
     case A_PULSE: return 0.5 + 0.5 * sin(pos * 0.5);
+    case A_GLITCH: case A_RIPPLE: return 1.0;
     default: {
         double d = fabs(row - pos) / SPAN;
         return d < 1.0 ? 1.0 - d : 0.0;
@@ -399,7 +455,7 @@ static double lit_at(double row, double pos) {
 static double advance(double pos, double step) {
     static double dir = 1.0;
     switch (anim) {
-    case A_WAVE: case A_PULSE: return pos + step;
+    case A_WAVE: case A_PULSE: case A_RIPPLE: return pos + step;
     case A_BOUNCE:
         if (pos > (double)nlines + SPAN) dir = -1.0;
         else if (pos < -SPAN) dir = 1.0;
@@ -415,9 +471,13 @@ static void row_text(buf *b, int r, double pos, int flat) {
         int v = (int)(70.0 + 185.0 * bright + 0.5);
         buf_fmt(b, "\x1b[38;2;%d;%d;%dm", v * col_r / 255, v * col_g / 255,
                 v * col_b / 255);
-        buf_str(b, lines[r - 1]);
+        if ((anim == A_GLITCH || anim == A_RIPPLE) && logo_is_braille() && !flat)
+            drawn = dot_row(b, r - 1, pos);
+        else {
+            buf_str(b, lines[r - 1]);
+            drawn = vis_width(lines[r - 1]);
+        }
         buf_str(b, "\x1b[m");
-        drawn = vis_width(lines[r - 1]);
     }
     buf_pad(b, width - drawn);
     if (r < ninfo) {
@@ -890,14 +950,14 @@ static double now_sec(void) {
     return (double)t.tv_sec + t.tv_nsec / 1e9;
 }
 
-static int paint_at(int fd, int top, double pos, int max_cols, int max_rows) {
+static int paint_at(int fd, int top, double pos, int max_cols, int max_rows, int flat) {
     buf b = {0};
     buf_str(&b, "\x1b\x37");
     for (int r = 0; r < rows; r++) {
         int screen = top + r;
         if (screen < 0 || screen >= max_rows) continue;
         buf line = {0};
-        row_text(&line, r, pos, 0);
+        row_text(&line, r, pos, flat);
         buf_fmt(&b, "\x1b[%d;1H", screen + 1);
         buf_add_clamped(&b, line.s ? line.s : "", max_cols);
         free(line.s);
@@ -1016,7 +1076,10 @@ static int wrap_shell(double fps, double step) {
             if (n <= 0) break;
             if (t.live) tr_feed(&t, b, (size_t)n);
             if (write(tty, b, (size_t)n) != n) break;
-            if (t.live && t.top < 0) t.live = 0;
+            if (t.live && t.top < 0) {
+                paint_at(tty, t.top, pos, ws.ws_col, ws.ws_row, 1);
+                t.live = 0;
+            }
         }
         if (t.alt != last_alt) {
             paint_reset();
@@ -1027,7 +1090,7 @@ static int wrap_shell(double fps, double step) {
                 paint_reset();
                 last_top = t.top;
             }
-            if (paint_at(tty, t.top, pos, ws.ws_col, ws.ws_row) < 0) break;
+            if (paint_at(tty, t.top, pos, ws.ws_col, ws.ws_row, 0) < 0) break;
             pos = advance(pos, step);
             next = now_sec() + 1.0 / fps;
         }
@@ -1254,8 +1317,8 @@ static void usage(void) {
          "  ffanim --unsetup         take that block back out\n"
          "  ffanim --off             print the block but skip the animation\n"
          "  ffanim --on              animate again\n"
-         "  ffanim --anim <name>     use sweep (default), wave, pulse or bounce\n"
-         "                           from now on, saved in ~/.config/ffanim\n"
+         "  ffanim --anim <name>     sweep (default), wave, pulse, bounce, glitch\n"
+         "                           or ripple, saved in ~/.config/ffanim\n"
          "  ffanim --color <r,g,b>   colour of the logo at full brightness, also\n"
          "                           saved (default 255,255,255)\n"
          "  ffanim --uninstall       delete ffanim and the logo it installed\n"
@@ -1342,7 +1405,8 @@ int main(int argc, char **argv) {
     if (want_anim || want_color) {
         if (want_anim) {
             if (anim_index(want_anim) < 0)
-                die("ffanim: unknown --anim %s (sweep, wave, pulse, bounce)", want_anim);
+                die("ffanim: unknown --anim %s (sweep, wave, pulse, bounce, "
+                    "glitch, ripple)", want_anim);
             pref_write("anim", want_anim);
             printf("ffanim anim %s\n", want_anim);
         }
